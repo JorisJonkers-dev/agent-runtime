@@ -1,0 +1,104 @@
+package com.jorisjonkers.personalstack.agentgateway.ws
+
+import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
+import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
+import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSession
+import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.slot
+import io.mockk.verify
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import org.springframework.web.socket.TextMessage
+import org.springframework.web.socket.WebSocketSession
+import tools.jackson.databind.ObjectMapper
+import java.net.URI
+import java.nio.file.Path
+import java.time.Instant
+
+class AgentAttachHandlerTest {
+    private val sessions = mockk<AgentSessionManager>(relaxed = true)
+    private val mapper = ObjectMapper()
+    private val props =
+        GatewayProperties(
+            workspaceRoot = "/workspace",
+            tmux = GatewayProperties.Tmux(socketName = "agent-gw", stateDir = "/tmp"),
+            cli = GatewayProperties.Cli(claude = "claude", codex = "codex"),
+            git = GatewayProperties.Git(deployKeyDir = "/x"),
+        )
+    private val handler = AgentAttachHandler(sessions, mapper, props)
+
+    private fun agent(
+        id: String,
+        tmp: Path,
+    ): AgentSession =
+        AgentSession(
+            id = id,
+            kind = AgentKind.SHELL,
+            tmuxSession = "agent-$id",
+            logFile = tmp.resolve("agent-$id.log").also { it.toFile().createNewFile() },
+            cwd = "/workspace",
+            createdAt = Instant.now(),
+        )
+
+    private fun wsSession(id: String): WebSocketSession {
+        val ws = mockk<WebSocketSession>(relaxed = true)
+        every { ws.uri } returns URI("ws://host/ws/agents/$id/attach")
+        every { ws.id } returns "ws-$id"
+        every { ws.isOpen } returns true
+        return ws
+    }
+
+    @Test
+    fun `attach sends one ansi snapshot frame before tailing`(
+        @TempDir tmp: Path,
+    ) {
+        val ws = wsSession("abc")
+        every { sessions.get("abc") } returns agent("abc", tmp)
+        every { sessions.captureWithEscapes("abc") } returns "SCREEN-SNAPSHOT"
+        val sent = slot<TextMessage>()
+        every { ws.sendMessage(capture(sent)) } returns Unit
+
+        handler.afterConnectionEstablished(ws)
+
+        verify { sessions.captureWithEscapes("abc") }
+        assertThat(sent.captured.payload).contains("SCREEN-SNAPSHOT")
+        assertThat(sent.captured.payload).contains("\"output\"")
+
+        handler.afterConnectionClosed(ws, org.springframework.web.socket.CloseStatus.NORMAL)
+    }
+
+    @Test
+    fun `resize frame routes to AgentSessionManager resize`() {
+        val ws = wsSession("abc")
+        handler.handleMessage(ws, TextMessage("""{"resize":{"cols":120,"rows":40}}"""))
+        verify { sessions.resize("abc", 120, 40) }
+        verify(exactly = 0) { sessions.send(any(), any(), any()) }
+    }
+
+    @Test
+    fun `input frame still routes to AgentSessionManager send`() {
+        val ws = wsSession("abc")
+        handler.handleMessage(ws, TextMessage("""{"input":"ls\r","enter":false}"""))
+        verify { sessions.send("abc", "ls\r", false) }
+        verify(exactly = 0) { sessions.resize(any(), any(), any()) }
+    }
+
+    @Test
+    fun `unknown frame is ignored without resize or send`() {
+        val ws = wsSession("abc")
+        handler.handleMessage(ws, TextMessage("""{"hello":"world"}"""))
+        verify(exactly = 0) { sessions.resize(any(), any(), any()) }
+        verify(exactly = 0) { sessions.send(any(), any(), any()) }
+    }
+
+    @Test
+    fun `malformed json is ignored`() {
+        val ws = wsSession("abc")
+        handler.handleMessage(ws, TextMessage("not json at all"))
+        verify(exactly = 0) { sessions.resize(any(), any(), any()) }
+        verify(exactly = 0) { sessions.send(any(), any(), any()) }
+    }
+}

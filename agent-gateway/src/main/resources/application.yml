@@ -1,0 +1,93 @@
+spring:
+  application:
+    name: agent-gateway
+  threads:
+    virtual:
+      enabled: true
+  # spring-cloud-starter-vault-config is on the runtime classpath via the
+  # shared Spring convention plugin, but the gateway holds no secrets — it
+  # only drives tmux + the CLIs over a WS/REST plane. Left enabled, the
+  # actuator health registry eagerly instantiates the Vault health
+  # contributor (vaultTemplate -> vaultSessionManager -> clientAuthentication)
+  # at context init; with no token in a runner Pod that throws a fatal
+  # BeanCreationException before Tomcat ever binds. Disable the integration.
+  cloud:
+    vault:
+      enabled: false
+  autoconfigure:
+    exclude:
+      - org.springframework.cloud.vault.config.VaultAutoConfiguration
+      - org.springframework.cloud.vault.config.VaultReactiveAutoConfiguration
+
+server:
+  port: 8090
+
+agent-gateway:
+  # Per-workspace runner Pods mount one PVC at /workspace. The
+  # gateway holds the canonical view of that mount; everything below
+  # is keyed off the same directory.
+  workspace-root: /workspace
+  # tmux state — sessions, logs, the fifo per pane the WS handler
+  # tails for streaming output. Kept under /tmp so a Pod restart
+  # is unambiguous (the log is gone, the agent is gone) instead of
+  # leaving half-attached panes behind on a volume.
+  tmux:
+    socket-name: agent-gw
+    state-dir: /tmp/agent-gateway
+    # ~40ms keeps streamed output feeling live. Per-keystroke
+    # send-keys is a separate, smaller latency source.
+    tail-interval-ms: 15
+  cli:
+    claude: ${CLAUDE_BIN:claude}
+    codex: ${CODEX_BIN:codex}
+    # The runner Pod is the outer sandbox. Docker-socket-enabled runners are
+    # host-equivalent for Docker/Testcontainers, while the CLIs still launch
+    # with approval/permission/sandbox prompts bypassed. Listed here so an
+    # upstream flag rename is a config flip, not an image rebuild.
+    claude-args:
+      - --dangerously-skip-permissions
+    codex-args:
+      - --dangerously-bypass-approvals-and-sandbox
+      - --dangerously-bypass-hook-trust
+  git:
+    # The deploy-key Secret is mounted into the Pod at this path by
+    # agents-api when it creates the runner Pod (Step 3).
+    deploy-key-dir: /var/run/secrets/agents/github-deploy-key
+  staged-inputs:
+    dir-name: .agent-inputs
+    max-bytes: 5242880
+
+management:
+  endpoints:
+    web:
+      base-path: /api/actuator
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+      group:
+        liveness:
+          include: ping
+  health:
+    # No Vault, no datasource — keep the gateway's health registry from
+    # instantiating contributors for infrastructure it never wires.
+    vault:
+      enabled: false
+    db:
+      enabled: false
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE_PROBABILITY:1.0}
+    propagation:
+      type: w3c
+  otlp:
+    tracing:
+      endpoint: ${OTLP_TRACING_ENDPOINT:http://alloy.observability.svc.cluster.local:4318/v1/traces}
+  observations:
+    key-values:
+      service.name: ${spring.application.name}
+      deployment.environment: ${DEPLOYMENT_ENVIRONMENT:unknown}
