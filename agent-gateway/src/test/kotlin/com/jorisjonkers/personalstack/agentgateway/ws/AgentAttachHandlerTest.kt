@@ -1,9 +1,19 @@
 package com.jorisjonkers.personalstack.agentgateway.ws
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
+import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayActiveSessionsSample
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayAttachTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayFailureReasonLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayModeLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOutcomeLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayReplayTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayStorageTelemetrySample
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSession
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
+import com.jorisjonkers.personalstack.agentgateway.tmux.TranscriptMetadata
 import com.jorisjonkers.personalstack.agentgateway.tmux.TranscriptStore
 import io.mockk.every
 import io.mockk.mockk
@@ -11,11 +21,14 @@ import io.mockk.slot
 import io.mockk.verify
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.Awaitility.await
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.springframework.web.socket.CloseStatus
 import org.springframework.web.socket.TextMessage
 import org.springframework.web.socket.WebSocketSession
 import tools.jackson.databind.ObjectMapper
+import java.io.IOException
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
@@ -34,7 +47,20 @@ class AgentAttachHandlerTest {
             cli = GatewayProperties.Cli(claude = "claude", codex = "codex"),
             git = GatewayProperties.Git(deployKeyDir = "/x"),
         )
-    private val handler = AgentAttachHandler(sessions, mapper, props)
+    private val handlers = mutableListOf<AgentAttachHandler>()
+    private val handler = attachHandler(props, TranscriptStore(props))
+
+    @AfterEach
+    fun shutdownHandlers() {
+        handlers.forEach(AgentAttachHandler::shutdown)
+        handlers.clear()
+    }
+
+    private fun attachHandler(
+        props: GatewayProperties,
+        store: TranscriptStore,
+        telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
+    ): AgentAttachHandler = AgentAttachHandler(sessions, mapper, props, store, telemetry).also(handlers::add)
 
     private fun agent(
         id: String,
@@ -90,7 +116,8 @@ class AgentAttachHandlerTest {
         store.open(stable, 1)
         Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
-        val durableHandler = AgentAttachHandler(sessions, mapper, props.copy(workspaceRoot = tmp.toString()), store)
+        val telemetry = RecordingTelemetry()
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
         val ws = wsSession("abc")
         every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
         val sent = mutableListOf<TextMessage>()
@@ -108,6 +135,15 @@ class AgentAttachHandlerTest {
         assertThat(sent[outputIndex].payload).contains("\"off\":5")
         assertThat(sent[replayCompleteIndex].payload).contains("\"cursor\":5")
         verify(exactly = 0) { sessions.captureWithEscapes("abc") }
+        telemetry.attachAttempts.single().let {
+            assertThat(it.mode).isEqualTo(GatewayModeLabel.SNAPSHOT)
+            assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.SUCCESS)
+        }
+        telemetry.replayEvents.single().let {
+            assertThat(it.bytes).isEqualTo(5)
+            assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.SUCCESS)
+        }
+        assertThat(telemetry.replayFailures).isEmpty()
 
         durableHandler.afterConnectionClosed(ws, org.springframework.web.socket.CloseStatus.NORMAL)
     }
@@ -121,7 +157,7 @@ class AgentAttachHandlerTest {
         store.open(stable, 1)
         Files.writeString(store.activeSegmentPath(stable), "abcdef", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
-        val durableHandler = AgentAttachHandler(sessions, mapper, props.copy(workspaceRoot = tmp.toString()), store)
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
         val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=4&cursor=1&off=2")
         every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
         val sent = mutableListOf<TextMessage>()
@@ -150,7 +186,7 @@ class AgentAttachHandlerTest {
         store.open(stableForOff, 1)
         Files.writeString(store.activeSegmentPath(stableForOff), "abcdef", StandardOpenOption.APPEND)
         store.recoverMetadata(stableForOff)
-        val durableHandler = AgentAttachHandler(sessions, mapper, props.copy(workspaceRoot = tmp.toString()), store)
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
 
         val cursorWs = wsSession("cursor", "?mode=RESUME&epoch=1&cursor=3")
         every { sessions.get("cursor") } returns agent("cursor", tmp, stableSessionId = stableForCursor)
@@ -189,7 +225,7 @@ class AgentAttachHandlerTest {
         store.open(stable, 2)
         Files.writeString(store.activeSegmentPath(stable), "abcdef", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
-        val durableHandler = AgentAttachHandler(sessions, mapper, props.copy(workspaceRoot = tmp.toString()), store)
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
         val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=3")
         every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable).copy(epoch = 2)
         val sent = mutableListOf<TextMessage>()
@@ -218,7 +254,7 @@ class AgentAttachHandlerTest {
         store.rotateIfNeeded(stable)
         Files.writeString(store.activeSegmentPath(stable), "3333", StandardOpenOption.APPEND)
         store.trimIfNeeded(stable)
-        val durableHandler = AgentAttachHandler(sessions, mapper, props.copy(workspaceRoot = tmp.toString()), store)
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
         val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=0")
         every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
         val sent = mutableListOf<TextMessage>()
@@ -238,6 +274,38 @@ class AgentAttachHandlerTest {
     }
 
     @Test
+    fun `resume request records resume attach mode even when replay falls back to snapshot`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val store = transcriptStore(tmp, segmentBytes = 4, capBytes = 8)
+        store.open(stable, 1)
+        Files.writeString(store.activeSegmentPath(stable), "1111", StandardOpenOption.APPEND)
+        store.rotateIfNeeded(stable)
+        Files.writeString(store.activeSegmentPath(stable), "2222", StandardOpenOption.APPEND)
+        store.rotateIfNeeded(stable)
+        Files.writeString(store.activeSegmentPath(stable), "3333", StandardOpenOption.APPEND)
+        store.trimIfNeeded(stable)
+        val telemetry = RecordingTelemetry()
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
+        val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=0")
+        every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
+        val sent = mutableListOf<TextMessage>()
+        every { ws.sendMessage(capture(sent)) } returns Unit
+
+        durableHandler.afterConnectionEstablished(ws)
+
+        assertThat(sent[0].payload).contains("\"control\":\"SNAPSHOT\"")
+        telemetry.attachAttempts.single().let {
+            assertThat(it.mode).isEqualTo(GatewayModeLabel.RESUME)
+            assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.SUCCESS)
+        }
+        assertThat(telemetry.attachFailures).isEmpty()
+
+        durableHandler.afterConnectionClosed(ws, org.springframework.web.socket.CloseStatus.NORMAL)
+    }
+
+    @Test
     fun `durable attach emits replay complete before live tailing`(
         @TempDir tmp: Path,
     ) {
@@ -246,7 +314,7 @@ class AgentAttachHandlerTest {
         store.open(stable, 1)
         Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
-        val durableHandler = AgentAttachHandler(sessions, mapper, props.copy(workspaceRoot = tmp.toString()), store)
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
         val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=0")
         every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
         val sent = CopyOnWriteArrayList<TextMessage>()
@@ -275,7 +343,8 @@ class AgentAttachHandlerTest {
         store.open(stable, 1)
         Files.writeString(store.activeSegmentPath(stable), "abc", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
-        val durableHandler = AgentAttachHandler(sessions, mapper, props.copy(workspaceRoot = tmp.toString()), store)
+        val telemetry = RecordingTelemetry()
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
         val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=nope")
         every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
         val sent = mutableListOf<TextMessage>()
@@ -285,8 +354,165 @@ class AgentAttachHandlerTest {
 
         assertThat(sent[0].payload).contains("\"control\":\"SNAPSHOT\"")
         assertThat(sent.any { it.payload.contains("\"reset\":true") }).isTrue
+        telemetry.attachAttempts.single().let {
+            assertThat(it.mode).isEqualTo(GatewayModeLabel.RESUME)
+            assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.SUCCESS)
+        }
+        telemetry.attachFailures.single().let {
+            assertThat(it.reason).isEqualTo(GatewayFailureReasonLabel.INVALID_REQUEST)
+            assertThat(it.mode).isEqualTo(GatewayModeLabel.RESUME)
+        }
 
         durableHandler.afterConnectionClosed(ws, org.springframework.web.socket.CloseStatus.NORMAL)
+    }
+
+    @Test
+    fun `durable attach keeps websocket compatible when replay reporting fails`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val store = mockk<TranscriptStore>()
+        every { store.recoverMetadata(stable) } returns
+            TranscriptMetadata(stableSessionId = stable, logicalStart = 0, logicalEnd = 12)
+        every { store.readRaw(stable, any(), any()) } throws IllegalStateException("storage unavailable")
+        val telemetry = RecordingTelemetry()
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
+        val ws = wsSession("abc")
+        every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
+        val sent = mutableListOf<TextMessage>()
+        every { ws.sendMessage(capture(sent)) } returns Unit
+
+        durableHandler.afterConnectionEstablished(ws)
+
+        assertThat(sent.any { it.payload.contains("\"control\":\"REPLAY_COMPLETE\"") }).isTrue
+        assertThat(sent.none { it.payload.contains("storage unavailable") || it.payload.contains("failure") }).isTrue
+        verify(exactly = 0) { ws.close(any<CloseStatus>()) }
+        telemetry.attachAttempts.single().let {
+            assertThat(it.mode).isEqualTo(GatewayModeLabel.SNAPSHOT)
+            assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.SUCCESS)
+        }
+        telemetry.replayEvents.single().let {
+            assertThat(it.bytes).isEqualTo(0)
+            assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.FAILURE)
+        }
+        telemetry.replayFailures.single().let { assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.FAILURE) }
+
+        durableHandler.afterConnectionClosed(ws, CloseStatus.NORMAL)
+    }
+
+    @Test
+    fun `metadata recovery failure records terminal attach failure`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val store = mockk<TranscriptStore>()
+        every { store.recoverMetadata(stable) } throws IllegalStateException("metadata unavailable")
+        val telemetry = RecordingTelemetry()
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
+        val ws = wsSession("abc")
+        every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
+
+        durableHandler.afterConnectionEstablished(ws)
+
+        telemetry.attachAttempts.single().let {
+            assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.FAILURE)
+            assertThat(it.mode).isEqualTo(GatewayModeLabel.SNAPSHOT)
+        }
+        telemetry.attachFailures.single().let { assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.FAILURE) }
+        verify { ws.close(any<CloseStatus>()) }
+    }
+
+    @Test
+    fun `websocket send failure before replay complete records terminal attach failure`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val store = transcriptStore(tmp)
+        store.open(stable, 1)
+        Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
+        store.recoverMetadata(stable)
+        val telemetry = RecordingTelemetry()
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
+        val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=0")
+        every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
+        val sent = mutableListOf<TextMessage>()
+        every { ws.sendMessage(any()) } answers {
+            val msg = firstArg<TextMessage>()
+            if (msg.payload.contains("\"output\"")) throw IOException("send failed")
+            sent += msg
+            Unit
+        }
+
+        durableHandler.afterConnectionEstablished(ws)
+
+        assertThat(sent.none { it.payload.contains("\"control\":\"REPLAY_COMPLETE\"") }).isTrue
+        telemetry.attachAttempts.single().let {
+            assertThat(it.mode).isEqualTo(GatewayModeLabel.RESUME)
+            assertThat(it.outcome).isEqualTo(GatewayOutcomeLabel.FAILURE)
+            assertThat(it.reason).isEqualTo(GatewayFailureReasonLabel.IO_ERROR)
+        }
+        telemetry.attachFailures.single().let { assertThat(it.reason).isEqualTo(GatewayFailureReasonLabel.IO_ERROR) }
+        telemetry.replayFailures.single().let { assertThat(it.reason).isEqualTo(GatewayFailureReasonLabel.IO_ERROR) }
+
+        durableHandler.afterConnectionClosed(ws, CloseStatus.NORMAL)
+    }
+
+    @Test
+    fun `durable tailer is closed when websocket closes`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val store = transcriptStore(tmp)
+        store.open(stable, 1)
+        Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
+        store.recoverMetadata(stable)
+        val durableProps =
+            props.copy(
+                workspaceRoot = tmp.toString(),
+                tmux = props.tmux.copy(tailIntervalMs = 10),
+            )
+        val durableHandler = attachHandler(durableProps, store)
+        val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=0")
+        every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
+        val sent = CopyOnWriteArrayList<TextMessage>()
+        every { ws.sendMessage(capture(sent)) } returns Unit
+
+        durableHandler.afterConnectionEstablished(ws)
+        durableHandler.afterConnectionClosed(ws, CloseStatus.NORMAL)
+        Files.writeString(store.activeSegmentPath(stable), "-after-close", StandardOpenOption.APPEND)
+        Thread.sleep(100)
+
+        assertThat(sent.any { it.payload.contains("\"output\":\"hello\"") }).isTrue
+        assertThat(sent.none { it.payload.contains("-after-close") }).isTrue
+    }
+
+    @Test
+    fun `shutdown closes active durable tailers`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val store = transcriptStore(tmp)
+        store.open(stable, 1)
+        Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
+        store.recoverMetadata(stable)
+        val durableProps =
+            props.copy(
+                workspaceRoot = tmp.toString(),
+                tmux = props.tmux.copy(tailIntervalMs = 10),
+            )
+        val durableHandler = attachHandler(durableProps, store)
+        val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=0")
+        every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
+        val sent = CopyOnWriteArrayList<TextMessage>()
+        every { ws.sendMessage(capture(sent)) } returns Unit
+
+        durableHandler.afterConnectionEstablished(ws)
+        durableHandler.shutdown()
+        Files.writeString(store.activeSegmentPath(stable), "-after-shutdown", StandardOpenOption.APPEND)
+        Thread.sleep(100)
+
+        assertThat(sent.any { it.payload.contains("\"output\":\"hello\"") }).isTrue
+        assertThat(sent.none { it.payload.contains("-after-shutdown") }).isTrue
     }
 
     @Test
@@ -319,6 +545,40 @@ class AgentAttachHandlerTest {
         handler.handleMessage(ws, TextMessage("not json at all"))
         verify(exactly = 0) { sessions.resize(any(), any(), any()) }
         verify(exactly = 0) { sessions.send(any(), any(), any()) }
+    }
+
+    private class RecordingTelemetry : AgentGatewayTelemetry {
+        val attachAttempts = CopyOnWriteArrayList<GatewayAttachTelemetry>()
+        val attachFailures = CopyOnWriteArrayList<GatewayAttachTelemetry>()
+        val replayEvents = CopyOnWriteArrayList<GatewayReplayTelemetry>()
+        val replayFailures = CopyOnWriteArrayList<GatewayReplayTelemetry>()
+        val operations = CopyOnWriteArrayList<GatewayOperationTelemetry>()
+
+        override fun recordActiveSessions(sample: GatewayActiveSessionsSample) = Unit
+
+        override fun recordOperation(event: GatewayOperationTelemetry) {
+            operations += event
+        }
+
+        override fun recordAttachAttempt(event: GatewayAttachTelemetry) {
+            attachAttempts += event
+        }
+
+        override fun recordAttachFailure(event: GatewayAttachTelemetry) {
+            attachFailures += event
+        }
+
+        override fun recordReplay(event: GatewayReplayTelemetry) {
+            replayEvents += event
+        }
+
+        override fun recordReplayFailure(event: GatewayReplayTelemetry) {
+            replayFailures += event
+        }
+
+        override fun recordStorage(sample: GatewayStorageTelemetrySample) = Unit
+
+        override fun recordStorageLimit(sample: GatewayStorageTelemetrySample) = Unit
     }
 
     private fun transcriptStore(

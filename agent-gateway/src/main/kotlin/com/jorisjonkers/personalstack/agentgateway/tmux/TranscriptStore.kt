@@ -1,10 +1,15 @@
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
+import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayModeLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayStorageObjectLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayStorageTelemetrySample
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component
 import java.io.InputStream
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
@@ -23,13 +28,23 @@ class TranscriptStore
     @Autowired
     constructor(
         private val props: GatewayProperties,
+        private val telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
     ) {
         private var clock: Clock = Clock.systemUTC()
+
+        @Volatile
+        private var cachedStorageStats =
+            TranscriptStorageStats(
+                usedBytes = 0,
+                capBytes = props.transcripts.capBytes,
+                refreshedAt = Instant.EPOCH,
+            )
 
         internal constructor(
             props: GatewayProperties,
             clock: Clock,
-        ) : this(props) {
+            telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
+        ) : this(props, telemetry) {
             this.clock = clock
         }
 
@@ -48,13 +63,16 @@ class TranscriptStore
             epoch: Long,
         ): TranscriptMetadata {
             val id = validateStableSessionId(stableSessionId)
-            return synchronized(lockFor(id)) {
-                require(epoch > 0) { "epoch must be positive" }
-                Files.createDirectories(segmentsDir(id))
-                val metadata = recoverMetadata(id).copy(epoch = epoch, sealed = false)
-                writeMetadata(id, metadata)
-                metadata
-            }
+            val metadata =
+                synchronized(lockFor(id)) {
+                    require(epoch > 0) { "epoch must be positive" }
+                    Files.createDirectories(segmentsDir(id))
+                    val metadata = recoverMetadata(id).copy(epoch = epoch, sealed = false)
+                    writeMetadata(id, metadata)
+                    metadata
+                }
+            refreshStorageStats()
+            return metadata
         }
 
         // Lease validation and atomic persistence are kept together under one lock.
@@ -205,70 +223,104 @@ class TranscriptStore
 
         fun rotateIfNeeded(stableSessionId: String): TranscriptMetadata {
             val id = validateStableSessionId(stableSessionId)
-            return synchronized(lockFor(id)) {
-                var metadata = recoverMetadata(id)
-                val active = segmentPath(id, metadata.activeSegment)
-                if (Files.exists(active) && Files.size(active) >= props.transcripts.segmentBytes) {
-                    metadata = metadata.copy(activeSegment = metadata.activeSegment + 1)
-                    val next = segmentPath(id, metadata.activeSegment)
-                    if (!Files.exists(next)) Files.createFile(next)
-                    writeMetadata(id, metadata)
+            val metadata =
+                synchronized(lockFor(id)) {
+                    var metadata = recoverMetadata(id)
+                    val active = segmentPath(id, metadata.activeSegment)
+                    if (Files.exists(active) && Files.size(active) >= props.transcripts.segmentBytes) {
+                        metadata = metadata.copy(activeSegment = metadata.activeSegment + 1)
+                        val next = segmentPath(id, metadata.activeSegment)
+                        if (!Files.exists(next)) Files.createFile(next)
+                        writeMetadata(id, metadata)
+                    }
+                    metadata
                 }
-                metadata
-            }
+            refreshStorageStats()
+            return metadata
         }
 
         fun trimIfNeeded(stableSessionId: String): TranscriptMetadata {
             val id = validateStableSessionId(stableSessionId)
-            return synchronized(lockFor(id)) {
-                var metadata = recoverMetadata(id)
-                val cap = props.transcripts.capBytes
-                if (metadata.byteCount <= cap) return metadata
+            val metadata =
+                synchronized(lockFor(id)) {
+                    var metadata = recoverMetadata(id)
+                    val cap = props.transcripts.capBytes
+                    if (metadata.byteCount <= cap) return@synchronized metadata
 
-                val segments = segmentFiles(id).toMutableList()
-                while (segments.size > 1 && metadata.byteCount > cap) {
-                    val victim = segments.removeAt(0)
-                    val bytes = Files.size(victim)
-                    Files.deleteIfExists(victim)
-                    metadata = metadata.copy(logicalStart = metadata.logicalStart + bytes)
+                    val segments = segmentFiles(id).toMutableList()
+                    while (segments.size > 1 && metadata.byteCount > cap) {
+                        val victim = segments.removeAt(0)
+                        val bytes = Files.size(victim)
+                        Files.deleteIfExists(victim)
+                        metadata = metadata.copy(logicalStart = metadata.logicalStart + bytes)
+                    }
+                    metadata =
+                        metadata.copy(
+                            logicalEnd = metadata.logicalStart + segments.sumOf { Files.size(it) },
+                            activeSegment = segmentIndex(segments.last()),
+                        )
+                    writeMetadata(id, metadata)
+                    metadata
                 }
-                metadata =
-                    metadata.copy(
-                        logicalEnd = metadata.logicalStart + segments.sumOf { Files.size(it) },
-                        activeSegment = segmentIndex(segments.last()),
-                    )
-                writeMetadata(id, metadata)
-                metadata
-            }
+            refreshStorageStats()
+            return metadata
         }
 
         fun seal(stableSessionId: String): TranscriptMetadata {
             val id = validateStableSessionId(stableSessionId)
-            return synchronized(lockFor(id)) {
-                val metadata = recoverMetadata(id).copy(sealed = true, updatedAt = Instant.now(clock))
-                writeMetadata(id, metadata)
-                metadata
-            }
+            val metadata =
+                synchronized(lockFor(id)) {
+                    val metadata = recoverMetadata(id).copy(sealed = true, updatedAt = Instant.now(clock))
+                    writeMetadata(id, metadata)
+                    metadata
+                }
+            refreshStorageStats()
+            return metadata
         }
 
         // Early exits map directly to cleanup safety gates.
         @Suppress("ReturnCount")
         fun cleanup(stableSessionId: String): Boolean {
             val id = validateStableSessionId(stableSessionId)
-            return synchronized(lockFor(id)) {
-                val dir = sessionDir(id)
-                if (!Files.exists(dir)) return false
-                val metadata = readMetadata(id)
-                val lease = readLease(leaseFile(id))
-                if (lease != null && lease.expiresAtMillis > clock.millis()) return false
-                if (metadata != null && !metadata.sealed) return false
-                val cutoff = Instant.now(clock).minusSeconds(props.transcripts.retentionSeconds)
-                if (metadata != null && metadata.updatedAt.isAfter(cutoff)) return false
-                Files.walk(dir).use { paths ->
-                    paths.sorted(Comparator.reverseOrder<Path>()).forEach { Files.deleteIfExists(it) }
+            val removed =
+                synchronized(lockFor(id)) {
+                    val dir = sessionDir(id)
+                    if (!Files.exists(dir)) return@synchronized false
+                    val metadata = readMetadata(id)
+                    val lease = readLease(leaseFile(id))
+                    if (lease != null && lease.expiresAtMillis > clock.millis()) return@synchronized false
+                    if (metadata != null && !metadata.sealed) return@synchronized false
+                    val cutoff = Instant.now(clock).minusSeconds(props.transcripts.retentionSeconds)
+                    if (metadata != null && metadata.updatedAt.isAfter(cutoff)) return@synchronized false
+                    Files.walk(dir).use { paths ->
+                        paths.sorted(Comparator.reverseOrder<Path>()).forEach { Files.deleteIfExists(it) }
+                    }
+                    true
                 }
-                true
-            }
+            refreshStorageStats()
+            return removed
+        }
+
+        fun storageStats(): TranscriptStorageStats = cachedStorageStats
+
+        fun refreshStorageStats(): TranscriptStorageStats {
+            val stats = scanStorageStats()
+            cachedStorageStats = stats
+            telemetry.recordStorage(
+                GatewayStorageTelemetrySample(
+                    storageObject = GatewayStorageObjectLabel.TRANSCRIPT,
+                    mode = GatewayModeLabel.DURABLE,
+                    bytes = stats.usedBytes,
+                ),
+            )
+            telemetry.recordStorageLimit(
+                GatewayStorageTelemetrySample(
+                    storageObject = GatewayStorageObjectLabel.TRANSCRIPT,
+                    mode = GatewayModeLabel.DURABLE,
+                    bytes = stats.capBytes,
+                ),
+            )
+            return stats
         }
 
         // The segment scan advances or stops at precise byte boundaries.
@@ -340,6 +392,71 @@ class TranscriptStore
                 ?.get(1)
                 ?.toInt()
                 ?: error("invalid segment file: $path")
+
+        private fun scanStorageStats(): TranscriptStorageStats {
+            val transcriptRoot = root()
+            if (!Files.isDirectory(transcriptRoot, LinkOption.NOFOLLOW_LINKS)) {
+                return TranscriptStorageStats(
+                    usedBytes = 0,
+                    capBytes = props.transcripts.capBytes,
+                    refreshedAt = Instant.now(clock),
+                )
+            }
+            val usedBytes =
+                Files.list(transcriptRoot).use { paths ->
+                    paths
+                        .filter { UUID_SESSION_DIR.matches(it.fileName.toString()) }
+                        .filter { safeDirectoryInside(transcriptRoot, it) }
+                        .mapToLong { sessionStorageBytes(transcriptRoot, it) }
+                        .sum()
+                }
+            return TranscriptStorageStats(
+                usedBytes = usedBytes,
+                capBytes = props.transcripts.capBytes,
+                refreshedAt = Instant.now(clock),
+            )
+        }
+
+        private fun sessionStorageBytes(
+            transcriptRoot: Path,
+            sessionDir: Path,
+        ): Long {
+            val segments = sessionDir.resolve("segments")
+            if (!safeDirectoryInside(transcriptRoot, segments)) return 0
+            return runCatching {
+                Files.list(segments).use { paths ->
+                    paths
+                        .filter { SEGMENT_FILE.matches(it.fileName.toString()) }
+                        .filter { safeRegularFileInside(transcriptRoot, it) }
+                        .mapToLong { runCatching { Files.size(it) }.getOrDefault(0L) }
+                        .sum()
+                }
+            }.getOrDefault(0L)
+        }
+
+        private fun safeDirectoryInside(
+            transcriptRoot: Path,
+            path: Path,
+        ): Boolean = pathInside(transcriptRoot, path) && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)
+
+        private fun safeRegularFileInside(
+            transcriptRoot: Path,
+            path: Path,
+        ): Boolean = pathInside(transcriptRoot, path) && Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)
+
+        private fun pathInside(
+            transcriptRoot: Path,
+            path: Path,
+        ): Boolean {
+            val normalizedRoot = transcriptRoot.toAbsolutePath().normalize()
+            val normalizedPath = path.toAbsolutePath().normalize()
+            if (!normalizedPath.startsWith(normalizedRoot)) return false
+            return runCatching {
+                path.toRealPath(LinkOption.NOFOLLOW_LINKS).startsWith(
+                    transcriptRoot.toRealPath(LinkOption.NOFOLLOW_LINKS),
+                )
+            }.getOrDefault(false)
+        }
 
         private fun AgentContinuation?.summary(): String {
             val reason = this?.reason?.trim()?.lowercase()
@@ -481,6 +598,8 @@ class TranscriptStore
             private const val MILLIS_PER_SECOND = 1_000L
             private const val MAX_REASON_CHARS = 160
             private const val MAX_SETUP_LABEL_CHARS = 160
+            private val UUID_SESSION_DIR =
+                Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
             private val SEGMENT_FILE = Regex("segment-(\\d{6})\\.log")
             private val SECRET_TOKEN =
                 Regex("""(?i)\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|github_pat_[A-Za-z0-9_]{12,})""")
@@ -515,4 +634,10 @@ data class TranscriptRawRead(
     val startOffset: Long,
     val bytes: ByteArray,
     val metadata: TranscriptMetadata,
+)
+
+data class TranscriptStorageStats(
+    val usedBytes: Long,
+    val capBytes: Long,
+    val refreshedAt: Instant,
 )

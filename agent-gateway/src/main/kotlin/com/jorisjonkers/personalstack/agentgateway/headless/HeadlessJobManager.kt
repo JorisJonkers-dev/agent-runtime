@@ -1,13 +1,24 @@
 package com.jorisjonkers.personalstack.agentgateway.headless
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
+import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayActiveSessionsSample
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayAgentKindLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayFailureReasonLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayModeLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOutcomeLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayStatusLabel
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.DisposableBean
 import org.springframework.stereotype.Component
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -29,9 +40,11 @@ import java.util.concurrent.TimeUnit
  * caller (agents-api) should detect a missing job id and surface it
  * as a FAILED status.
  */
+@Suppress("LargeClass", "TooManyFunctions")
 @Component
 class HeadlessJobManager(
     private val props: GatewayProperties,
+    private val telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
     private val processFactory: ProcessFactory = DefaultProcessFactory,
 ) : DisposableBean {
     private val log = LoggerFactory.getLogger(HeadlessJobManager::class.java)
@@ -39,6 +52,7 @@ class HeadlessJobManager(
     private val processes = ConcurrentHashMap<String, Process>()
     private val executor: ExecutorService = Executors.newVirtualThreadPerTaskExecutor()
 
+    @Suppress("LongMethod")
     fun launch(
         kind: AgentKind,
         prompt: String,
@@ -61,7 +75,14 @@ class HeadlessJobManager(
                 createdAt = Instant.now(),
             )
         jobs[id] = job
-        executor.submit { runJob(id, command, cwd, outputFile.toFile(), timeoutSeconds) }
+        recordJobCounts()
+        recordHeadlessJobEvent(
+            kind = kind,
+            operation = GatewayOperationLabel.SPAWN,
+            outcome = GatewayOutcomeLabel.SUCCESS,
+            duration = Duration.between(job.createdAt, Instant.now()),
+        )
+        executor.submit { runJob(id, kind, command, cwd, outputFile.toFile(), timeoutSeconds) }
         log.info("launched headless {} job {} in {}", kind, id, cwd)
         return job
     }
@@ -71,10 +92,27 @@ class HeadlessJobManager(
     fun list(): List<HeadlessJob> = jobs.values.sortedBy { it.createdAt }
 
     fun cancel(id: String): Boolean {
-        val process = processes.remove(id) ?: return jobs.containsKey(id)
+        val process =
+            processes.remove(id)
+                ?: return jobs[id]?.let { job ->
+                    recordHeadlessJobEvent(
+                        kind = job.kind,
+                        operation = GatewayOperationLabel.STOP,
+                        outcome = GatewayOutcomeLabel.SKIPPED,
+                        duration = Duration.ZERO,
+                    )
+                    true
+                } ?: false
         process.destroyForcibly()
-        jobs.compute(id) { _, job ->
-            job?.copy(status = HeadlessJobStatus.CANCELLED, completedAt = Instant.now())
+        val cancelled = markJob(id, HeadlessJobStatus.CANCELLED)
+        cancelled?.let {
+            recordHeadlessJobEvent(
+                kind = it.kind,
+                operation = GatewayOperationLabel.STOP,
+                outcome = GatewayOutcomeLabel.CANCELLED,
+                reason = GatewayFailureReasonLabel.CANCELLED,
+                duration = jobDuration(it),
+            )
         }
         log.info("cancelled headless job {}", id)
         return true
@@ -96,29 +134,55 @@ class HeadlessJobManager(
         executor.shutdownNow()
     }
 
+    @Suppress("LongMethod")
     private fun runJob(
         id: String,
+        kind: AgentKind,
         command: List<String>,
         cwd: File,
         outputFile: File,
         timeoutSeconds: Long,
     ) {
-        val process = startProcess(id, command, cwd) ?: return
+        val process =
+            startProcess(id, kind, command, cwd)
+                ?: run {
+                    recordCleanup(kind, GatewayOutcomeLabel.SKIPPED, GatewayFailureReasonLabel.UNKNOWN)
+                    return
+                }
         processes[id] = process
         try {
             awaitAndCapture(id, process, outputFile, timeoutSeconds)
         } catch (ex: InterruptedException) {
             process.destroyForcibly()
-            jobs.compute(id) { _, job ->
-                job?.copy(status = HeadlessJobStatus.CANCELLED, completedAt = Instant.now())
+            val cancelled = markJob(id, HeadlessJobStatus.CANCELLED)
+            cancelled?.let {
+                recordHeadlessJobEvent(
+                    kind = it.kind,
+                    operation = GatewayOperationLabel.HEADLESS_JOB,
+                    outcome = GatewayOutcomeLabel.CANCELLED,
+                    reason = GatewayFailureReasonLabel.CANCELLED,
+                    duration = jobDuration(it),
+                )
             }
         } finally {
-            processes.remove(id)
+            val removed = processes.remove(id)
+            val reason =
+                if (jobs[id]?.status == HeadlessJobStatus.CANCELLED) {
+                    GatewayFailureReasonLabel.CANCELLED
+                } else {
+                    GatewayFailureReasonLabel.NONE
+                }
+            recordCleanup(
+                kind = kind,
+                outcome = if (removed == null) GatewayOutcomeLabel.SKIPPED else GatewayOutcomeLabel.SUCCESS,
+                reason = reason,
+            )
         }
     }
 
     private fun startProcess(
         id: String,
+        kind: AgentKind,
         command: List<String>,
         cwd: File,
     ): Process? =
@@ -126,12 +190,20 @@ class HeadlessJobManager(
             processFactory.start(command, cwd)
         }.getOrElse { ex ->
             log.error("headless job {} failed to start: {}", id, ex.message)
-            jobs.compute(id) { _, job ->
-                job?.copy(status = HeadlessJobStatus.FAILED, completedAt = Instant.now())
+            val failed = markJob(id, HeadlessJobStatus.FAILED)
+            failed?.let {
+                recordHeadlessJobEvent(
+                    kind = kind,
+                    operation = GatewayOperationLabel.SPAWN,
+                    outcome = GatewayOutcomeLabel.FAILURE,
+                    reason = startFailureReason(ex),
+                    duration = jobDuration(it),
+                )
             }
             null
         }
 
+    @Suppress("LongMethod")
     private fun awaitAndCapture(
         id: String,
         process: Process,
@@ -144,12 +216,40 @@ class HeadlessJobManager(
         gobbler.join(GOBBLER_JOIN_MS)
         if (!finished) {
             process.destroyForcibly()
-            updateJob(id, HeadlessJobStatus.FAILED, TIMEOUT_EXIT_CODE)
+            val failed = updateJob(id, HeadlessJobStatus.FAILED, TIMEOUT_EXIT_CODE)
+            failed?.takeUnless { it.status == HeadlessJobStatus.CANCELLED }?.let {
+                recordHeadlessJobEvent(
+                    kind = it.kind,
+                    operation = GatewayOperationLabel.HEADLESS_JOB,
+                    outcome = GatewayOutcomeLabel.FAILURE,
+                    reason = GatewayFailureReasonLabel.TIMEOUT,
+                    duration = jobDuration(it),
+                )
+            }
             log.warn("headless job {} timed out after {}s", id, timeoutSeconds)
         } else {
             val exitCode = process.exitValue()
             val status = if (exitCode == 0) HeadlessJobStatus.COMPLETED else HeadlessJobStatus.FAILED
-            updateJob(id, status, exitCode)
+            val updated = updateJob(id, status, exitCode)
+            updated?.takeUnless { it.status == HeadlessJobStatus.CANCELLED }?.let {
+                recordHeadlessJobEvent(
+                    kind = it.kind,
+                    operation = GatewayOperationLabel.HEADLESS_JOB,
+                    outcome =
+                        if (status == HeadlessJobStatus.COMPLETED) {
+                            GatewayOutcomeLabel.SUCCESS
+                        } else {
+                            GatewayOutcomeLabel.FAILURE
+                        },
+                    reason =
+                        if (status == HeadlessJobStatus.COMPLETED) {
+                            GatewayFailureReasonLabel.NONE
+                        } else {
+                            GatewayFailureReasonLabel.PROCESS_EXITED
+                        },
+                    duration = jobDuration(it),
+                )
+            }
             log.info("headless job {} finished status={} exitCode={}", id, status, exitCode)
         }
     }
@@ -158,11 +258,93 @@ class HeadlessJobManager(
         id: String,
         status: HeadlessJobStatus,
         exitCode: Int,
-    ) {
+    ): HeadlessJob? {
+        var updated: HeadlessJob? = null
         jobs.compute(id) { _, job ->
-            job?.copy(status = status, exitCode = exitCode, completedAt = Instant.now())
+            job
+                ?.takeUnless { it.status == HeadlessJobStatus.CANCELLED }
+                ?.copy(status = status, exitCode = exitCode, completedAt = Instant.now())
+                ?.also { updated = it }
+                ?: job.also { updated = it }
+        }
+        recordJobCounts()
+        return updated
+    }
+
+    private fun markJob(
+        id: String,
+        status: HeadlessJobStatus,
+    ): HeadlessJob? {
+        var updated: HeadlessJob? = null
+        jobs.compute(id) { _, job ->
+            job?.copy(status = status, completedAt = Instant.now()).also { updated = it }
+        }
+        recordJobCounts()
+        return updated
+    }
+
+    private fun recordJobCounts() {
+        val counts = jobs.values.groupingBy { it.kind to it.status }.eachCount()
+        AgentKind.values().forEach { kind ->
+            HeadlessJobStatus.values().forEach { status ->
+                telemetry.recordActiveSessions(
+                    GatewayActiveSessionsSample(
+                        status = status.toTelemetryStatus(),
+                        kind = kind.toTelemetryKind(),
+                        mode = GatewayModeLabel.HEADLESS,
+                        count = counts[kind to status]?.toLong() ?: 0,
+                    ),
+                )
+            }
         }
     }
+
+    private fun recordHeadlessJobEvent(
+        kind: AgentKind,
+        operation: GatewayOperationLabel,
+        outcome: GatewayOutcomeLabel,
+        reason: GatewayFailureReasonLabel = GatewayFailureReasonLabel.NONE,
+        duration: Duration,
+    ) {
+        telemetry.recordOperation(
+            GatewayOperationTelemetry(
+                operation = operation,
+                kind = kind.toTelemetryKind(),
+                mode = GatewayModeLabel.HEADLESS,
+                outcome = outcome,
+                reason = reason,
+                duration = duration,
+            ),
+        )
+    }
+
+    private fun recordCleanup(
+        kind: AgentKind,
+        outcome: GatewayOutcomeLabel,
+        reason: GatewayFailureReasonLabel,
+    ) {
+        recordHeadlessJobEvent(
+            kind = kind,
+            operation = GatewayOperationLabel.STOP,
+            outcome = outcome,
+            reason = reason,
+            duration = Duration.ZERO,
+        )
+    }
+
+    private fun jobDuration(job: HeadlessJob): Duration =
+        Duration.between(job.createdAt, job.completedAt ?: Instant.now())
+
+    private fun startFailureReason(ex: Throwable): GatewayFailureReasonLabel =
+        when (ex) {
+            is IOException -> GatewayFailureReasonLabel.IO_ERROR
+            is SecurityException -> GatewayFailureReasonLabel.PERMISSION_DENIED
+            else -> GatewayFailureReasonLabel.UNKNOWN
+        }
+
+    private fun AgentKind.toTelemetryKind(): GatewayAgentKindLabel = GatewayAgentKindLabel.fromRaw(name)
+
+    private fun HeadlessJobStatus.toTelemetryStatus(): GatewayStatusLabel = GatewayStatusLabel.fromRaw(name)
 
     /**
      * Build the one-shot CLI command for a headless run. Claude uses

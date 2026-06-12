@@ -1,8 +1,12 @@
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
+import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.MicrometerAgentGatewayTelemetry
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
@@ -20,6 +24,7 @@ class TranscriptStoreTest {
         leaseTtlSeconds: Long = 60,
         retentionSeconds: Long = 0,
         clock: Clock = Clock.fixed(Instant.parse("2026-06-12T09:00:00Z"), ZoneOffset.UTC),
+        telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
     ): TranscriptStore =
         TranscriptStore(
             GatewayProperties(
@@ -36,6 +41,7 @@ class TranscriptStoreTest {
                     ),
             ),
             clock,
+            telemetry,
         )
 
     @Test
@@ -150,6 +156,152 @@ class TranscriptStoreTest {
 
         assertThat(store.cleanup(stable)).isTrue
         assertThat(Files.exists(path)).isFalse
+    }
+
+    @Test
+    fun `storage stats report zero usage and configured durable cap`(
+        @TempDir tmp: Path,
+    ) {
+        val registry = SimpleMeterRegistry()
+        val store = store(tmp, capBytes = 123, telemetry = MicrometerAgentGatewayTelemetry(registry))
+
+        val stats = store.refreshStorageStats()
+
+        assertThat(stats.usedBytes).isZero()
+        assertThat(stats.capBytes).isEqualTo(123)
+        assertThat(store.storageStats()).isEqualTo(stats)
+        assertThat(registry.find("agent.gateway.storage.bytes").gauge()!!.value()).isZero()
+        assertThat(registry.find("agent.gateway.storage.limit.bytes").gauge()!!.value()).isEqualTo(123.0)
+    }
+
+    @Test
+    fun `storage stats are cached until maintenance refresh`(
+        @TempDir tmp: Path,
+    ) {
+        val registry = SimpleMeterRegistry()
+        val store = store(tmp, telemetry = MicrometerAgentGatewayTelemetry(registry))
+        val stable = "11111111-1111-1111-1111-111111111111"
+        store.open(stable, 1)
+        Files.writeString(store.activeSegmentPath(stable), "one", StandardOpenOption.APPEND)
+
+        val first = store.refreshStorageStats()
+        Files.writeString(store.activeSegmentPath(stable), "two", StandardOpenOption.APPEND)
+
+        assertThat(store.storageStats().usedBytes).isEqualTo(first.usedBytes)
+        assertThat(registry.find("agent.gateway.storage.bytes").gauge()!!.value()).isEqualTo(first.usedBytes.toDouble())
+
+        val refreshed = store.trimIfNeeded(stable)
+
+        assertThat(refreshed.byteCount).isEqualTo(6)
+        assertThat(store.storageStats().usedBytes).isEqualTo(6)
+        assertThat(registry.find("agent.gateway.storage.bytes").gauge()!!.value()).isEqualTo(6.0)
+    }
+
+    @Test
+    fun `storage stats include inactive retained sessions`(
+        @TempDir tmp: Path,
+    ) {
+        val store = store(tmp, retentionSeconds = 3600)
+        val active = "11111111-1111-1111-1111-111111111111"
+        val retained = "22222222-2222-2222-2222-222222222222"
+        store.open(active, 1)
+        Files.writeString(store.activeSegmentPath(active), "active", StandardOpenOption.APPEND)
+        store.open(retained, 1)
+        Files.writeString(store.activeSegmentPath(retained), "retained", StandardOpenOption.APPEND)
+        store.seal(retained)
+
+        val stats = store.refreshStorageStats()
+
+        assertThat(stats.usedBytes).isEqualTo("activeretained".length.toLong())
+    }
+
+    @Test
+    fun `storage scan ignores paths outside transcript root`(
+        @TempDir tmp: Path,
+    ) {
+        val store = store(tmp)
+        val root = store.root()
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val segments = root.resolve(stable).resolve("segments")
+        Files.createDirectories(segments)
+        Files.writeString(
+            segments.resolve("segment-000000.log"),
+            "in",
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+        )
+        val outside = tmp.resolve("outside.log")
+        Files.writeString(outside, "outside", StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
+        val link = segments.resolve("segment-000001.log")
+        assumeTrue(runCatching { Files.createSymbolicLink(link, outside) }.isSuccess)
+
+        val stats = store.refreshStorageStats()
+
+        assertThat(stats.usedBytes).isEqualTo(2)
+    }
+
+    @Test
+    fun `storage scan is bounded to uuid session segment files`(
+        @TempDir tmp: Path,
+    ) {
+        val store = store(tmp)
+        val root = store.root()
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val segments = root.resolve(stable).resolve("segments")
+        Files.createDirectories(segments.resolve("nested"))
+        Files.writeString(
+            segments.resolve("segment-000000.log"),
+            "ok",
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+        )
+        Files.writeString(
+            segments.resolve("nested").resolve("segment-000001.log"),
+            "nested",
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+        )
+        Files.writeString(
+            segments.resolve("segment-latest.log"),
+            "unknown",
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+        )
+        Files.createDirectories(root.resolve("not-a-session").resolve("segments"))
+        Files.writeString(
+            root.resolve("not-a-session").resolve("segments").resolve("segment-000000.log"),
+            "ignored",
+            StandardOpenOption.CREATE_NEW,
+            StandardOpenOption.WRITE,
+        )
+
+        val stats = store.refreshStorageStats()
+
+        assertThat(stats.usedBytes).isEqualTo(2)
+    }
+
+    @Test
+    fun `storage gauges use aggregate labels only`(
+        @TempDir tmp: Path,
+    ) {
+        val registry = SimpleMeterRegistry()
+        val store = store(tmp, telemetry = MicrometerAgentGatewayTelemetry(registry))
+        val stable = "11111111-1111-1111-1111-111111111111"
+        store.open(stable, 1)
+        Files.writeString(store.activeSegmentPath(stable), "bytes", StandardOpenOption.APPEND)
+
+        store.seal(stable)
+
+        val storageMeters =
+            registry.meters
+                .filter { it.id.name in setOf("agent.gateway.storage.bytes", "agent.gateway.storage.limit.bytes") }
+        assertThat(storageMeters).hasSize(2)
+        storageMeters.forEach { meter ->
+            assertThat(meter.id.tags.map { it.key })
+                .containsExactlyInAnyOrder("service", "storage_object", "mode")
+            assertThat(meter.id.tags.map { it.value })
+                .doesNotContain(stable, store.root().toString())
+        }
     }
 
     @Test

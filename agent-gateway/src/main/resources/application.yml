@@ -73,9 +73,13 @@ management:
   endpoint:
     health:
       show-details: always
+      probes:
+        enabled: true
       group:
         liveness:
-          include: ping
+          include: livenessState,ping
+        readiness:
+          include: readinessState
   health:
     # No Vault, no datasource — keep the gateway's health registry from
     # instantiating contributors for infrastructure it never wires.

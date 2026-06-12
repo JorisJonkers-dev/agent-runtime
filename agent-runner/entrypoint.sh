@@ -182,6 +182,30 @@ speckit_seed_workspace() {
   done
 }
 
+append_otel_resource_attribute() {
+  key="$1"
+  value="$2"
+
+  if [ -z "$value" ]; then
+    return
+  fi
+
+  case ",${OTEL_RESOURCE_ATTRIBUTES:-}," in
+    *",${key}="*) return ;;
+  esac
+
+  if [ -n "${OTEL_RESOURCE_ATTRIBUTES:-}" ]; then
+    export OTEL_RESOURCE_ATTRIBUTES="${OTEL_RESOURCE_ATTRIBUTES},${key}=${value}"
+  else
+    export OTEL_RESOURCE_ATTRIBUTES="${key}=${value}"
+  fi
+}
+
+configure_otel_resource_attributes() {
+  append_otel_resource_attribute "service.version" "${SERVICE_VERSION:-unknown}"
+  append_otel_resource_attribute "deployment.environment" "${DEPLOYMENT_ENVIRONMENT:-unknown}"
+}
+
 if [ "${AGENT_RUNNER_ENTRYPOINT_SELF_TEST:-}" = "agent-kit-manifest" ]; then
   check_agent_kit_manifests
   exit 0
@@ -202,7 +226,17 @@ if [ "${AGENT_RUNNER_ENTRYPOINT_SELF_TEST:-}" = "speckit-seed" ]; then
   exit 0
 fi
 
+if [ "${AGENT_RUNNER_ENTRYPOINT_SELF_TEST:-}" = "otel-resource-attributes" ]; then
+  configure_otel_resource_attributes
+  printf '%s\n' "$OTEL_RESOURCE_ATTRIBUTES"
+  exit 0
+fi
+
 check_agent_kit_manifests
+if [ -z "${OTEL_SERVICE_NAME:-}" ]; then
+  export OTEL_SERVICE_NAME="agent-gateway"
+fi
+configure_otel_resource_attributes
 
 # Bootstrap git identity — agents-api injects GIT_AUTHOR_NAME /
 # GIT_AUTHOR_EMAIL when it creates the Pod; fall back to a clearly
@@ -508,4 +542,5 @@ speckit_seed_workspace
 exec java \
   -XX:+UseZGC \
   -Xmx1g \
+  -javaagent:/opt/otel-javaagent.jar \
   -jar /opt/agent-gateway.jar

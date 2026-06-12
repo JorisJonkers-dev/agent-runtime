@@ -1,48 +1,113 @@
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
+import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayActiveSessionsSample
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayFailureReasonLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOutcomeLabel
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.spyk
 import io.mockk.verify
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.Awaitility.await
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ScheduledExecutorService
 
 class AgentSessionManagerTest {
     private val tmux = mockk<TmuxClient>(relaxed = true)
+    private val managers = mutableListOf<AgentSessionManager>()
+
+    @AfterEach
+    fun shutdownManagers() {
+        managers.forEach(AgentSessionManager::shutdown)
+        managers.clear()
+    }
 
     private fun manager(
         tmp: Path,
         stagedInputs: GatewayProperties.StagedInputs = GatewayProperties.StagedInputs(),
         transcripts: GatewayProperties.Transcripts = GatewayProperties.Transcripts(trimIntervalSeconds = 1),
+        telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
     ): AgentSessionManager {
         val workspace = tmp.resolve("workspace")
         Files.createDirectories(workspace)
-        val props =
-            GatewayProperties(
-                workspaceRoot = workspace.toString(),
-                tmux = GatewayProperties.Tmux(socketName = "agent-gw", stateDir = tmp.toString()),
-                cli =
-                    GatewayProperties.Cli(
-                        claude = "/usr/local/bin/claude",
-                        codex = "/usr/local/bin/codex",
-                        claudeArgs = listOf("--dangerously-skip-permissions"),
-                        codexArgs =
-                            listOf(
-                                "--dangerously-bypass-approvals-and-sandbox",
-                                "--dangerously-bypass-hook-trust",
-                            ),
-                    ),
-                git = GatewayProperties.Git(deployKeyDir = "/x"),
-                stagedInputs = stagedInputs,
-                transcripts = transcripts,
-            )
-        return AgentSessionManager(tmux, props)
+        val props = gatewayProperties(tmp, workspace, stagedInputs, transcripts)
+        return AgentSessionManager(tmux, props, TranscriptStore(props), telemetry).also(managers::add)
+    }
+
+    private fun gatewayProperties(
+        tmp: Path,
+        workspace: Path,
+        stagedInputs: GatewayProperties.StagedInputs = GatewayProperties.StagedInputs(),
+        transcripts: GatewayProperties.Transcripts = GatewayProperties.Transcripts(trimIntervalSeconds = 1),
+    ): GatewayProperties =
+        GatewayProperties(
+            workspaceRoot = workspace.toString(),
+            tmux = GatewayProperties.Tmux(socketName = "agent-gw", stateDir = tmp.toString()),
+            cli =
+                GatewayProperties.Cli(
+                    claude = "/usr/local/bin/claude",
+                    codex = "/usr/local/bin/codex",
+                    claudeArgs = listOf("--dangerously-skip-permissions"),
+                    codexArgs =
+                        listOf(
+                            "--dangerously-bypass-approvals-and-sandbox",
+                            "--dangerously-bypass-hook-trust",
+                        ),
+                ),
+            git = GatewayProperties.Git(deployKeyDir = "/x"),
+            stagedInputs = stagedInputs,
+            transcripts = transcripts,
+        )
+
+    @Test
+    fun `spawn uses injected transcript store`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val workspace = tmp.resolve("workspace")
+        Files.createDirectories(workspace)
+        val props = gatewayProperties(tmp, workspace)
+        val store = spyk(TranscriptStore(props))
+        val mgr = AgentSessionManager(tmux, props, store).also(managers::add)
+
+        val session = mgr.spawn(AgentKind.SHELL, stableSessionId = stable)
+
+        assertThat(session.logFile).isEqualTo(store.activeSegmentPath(stable))
+        verify { store.acquireLease(stable, session.tmuxSession, 1) }
+    }
+
+    @Test
+    fun `shutdown terminates transcript maintenance executor`(
+        @TempDir tmp: Path,
+    ) {
+        val mgr = manager(tmp)
+        val first = mgr.spawn(AgentKind.SHELL)
+        val second = mgr.spawn(AgentKind.CODEX)
+
+        mgr.shutdown()
+
+        val trimmer =
+            AgentSessionManager::class.java
+                .getDeclaredField("trimmer")
+                .apply { isAccessible = true }
+                .get(mgr) as ScheduledExecutorService
+        assertThat(trimmer.isShutdown).isTrue
+        assertThat(trimmer.isTerminated).isTrue
+        assertThat(mgr.get(first.id)).isNull()
+        assertThat(mgr.get(second.id)).isNull()
+        verify { tmux.killSession(first.tmuxSession) }
+        verify { tmux.killSession(second.tmuxSession) }
     }
 
     @Test
@@ -282,6 +347,82 @@ class AgentSessionManagerTest {
     }
 
     @Test
+    fun `records interactive operation outcomes and active session gauges with bounded labels`(
+        @TempDir tmp: Path,
+    ) {
+        val telemetry = RecordingTelemetry()
+        val mgr = manager(tmp, telemetry = telemetry)
+        val workspace = tmp.resolve("workspace")
+        val session = mgr.spawn(AgentKind.CLAUDE, workspacePath = workspace.toString())
+        every { tmux.capture(session.tmuxSession, 1_000) } returns "screen content"
+
+        mgr.send(session.id, "list files", enter = true)
+        mgr.resize(session.id, 100, 30)
+        assertThat(mgr.capture(session.id)).isEqualTo("screen content")
+        assertThatThrownBy { mgr.send("missing-agent", "x") }
+            .isInstanceOf(IllegalStateException::class.java)
+        assertThatThrownBy { mgr.stageInput(session.id, "", "source.txt") }
+            .isInstanceOf(IllegalArgumentException::class.java)
+        mgr.stop(session.id)
+
+        assertThat(telemetry.operations.map { Triple(it.operation, it.outcome, it.reason) })
+            .contains(
+                Triple(GatewayOperationLabel.SPAWN, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.INPUT, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.RESIZE, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.REPLAY, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.INPUT, GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.NOT_FOUND),
+                Triple(
+                    GatewayOperationLabel.INPUT,
+                    GatewayOutcomeLabel.FAILURE,
+                    GatewayFailureReasonLabel.INVALID_REQUEST,
+                ),
+                Triple(GatewayOperationLabel.STOP, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+            )
+        assertThat(telemetry.activeSamples)
+            .anySatisfy {
+                assertThat(it.kind.label).isEqualTo("claude")
+                assertThat(it.mode.label).isEqualTo("interactive")
+                assertThat(it.status.label).isEqualTo("running")
+                assertThat(it.count).isEqualTo(1L)
+            }.anySatisfy {
+                assertThat(it.kind.label).isEqualTo("claude")
+                assertThat(it.mode.label).isEqualTo("interactive")
+                assertThat(it.status.label).isEqualTo("running")
+                assertThat(it.count).isEqualTo(0L)
+            }
+        assertThat(telemetry.operations.flatMap { it.labels() } + telemetry.activeSamples.flatMap { it.labels() })
+            .doesNotContain(
+                session.id,
+                requireNotNull(session.stableSessionId),
+                workspace.toString(),
+                "source.txt",
+                "missing-agent",
+            )
+    }
+
+    @Test
+    fun `records durable transcript lease conflict as bounded spawn failure`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val firstTelemetry = RecordingTelemetry()
+        val secondTelemetry = RecordingTelemetry()
+        val first = manager(tmp, telemetry = firstTelemetry)
+        val second = manager(tmp, telemetry = secondTelemetry)
+
+        first.spawn(AgentKind.SHELL, stableSessionId = stable)
+
+        assertThatThrownBy { second.spawn(AgentKind.SHELL, stableSessionId = stable) }
+            .isInstanceOf(IllegalStateException::class.java)
+
+        assertThat(secondTelemetry.operations.map { Triple(it.operation, it.outcome, it.reason) })
+            .contains(Triple(GatewayOperationLabel.SPAWN, GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.OTHER))
+        assertThat(secondTelemetry.operations.flatMap { it.labels() })
+            .doesNotContain(stable, "agent-")
+    }
+
+    @Test
     fun `trims a session log once it outgrows its disk cap`(
         @TempDir tmp: Path,
     ) {
@@ -304,7 +445,7 @@ class AgentSessionManagerTest {
                     ),
             )
         val store = TranscriptStore(props)
-        val mgr = AgentSessionManager(tmux, props, store)
+        val mgr = AgentSessionManager(tmux, props, store).also(managers::add)
         try {
             val s = mgr.spawn(AgentKind.SHELL, stableSessionId = stable)
             val firstSegment = store.activeSegmentPath(requireNotNull(s.stableSessionId))
@@ -399,6 +540,24 @@ class AgentSessionManagerTest {
             assertThat(text).doesNotContain("ghp_1234567890123456")
         } finally {
             mgr.shutdown()
+        }
+    }
+
+    private fun GatewayOperationTelemetry.labels(): List<String> =
+        listOf(operation.label, kind.label, mode.label, outcome.label, reason.label)
+
+    private fun GatewayActiveSessionsSample.labels(): List<String> = listOf(status.label, kind.label, mode.label)
+
+    private class RecordingTelemetry : AgentGatewayTelemetry {
+        val operations = CopyOnWriteArrayList<GatewayOperationTelemetry>()
+        val activeSamples = CopyOnWriteArrayList<GatewayActiveSessionsSample>()
+
+        override fun recordOperation(event: GatewayOperationTelemetry) {
+            operations += event
+        }
+
+        override fun recordActiveSessions(sample: GatewayActiveSessionsSample) {
+            activeSamples += sample
         }
     }
 }

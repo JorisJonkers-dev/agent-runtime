@@ -1,12 +1,23 @@
 package com.jorisjonkers.personalstack.agentgateway.web
 
+import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayFailureReasonLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationLabel
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationTelemetry
+import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOutcomeLabel
+import com.jorisjonkers.personalstack.agentgateway.process.ProcessFailedException
+import com.jorisjonkers.personalstack.agentgateway.process.ProcessRunner
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentContinuation
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSession
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
 import com.jorisjonkers.personalstack.agentgateway.tmux.StagedInput
+import io.micrometer.observation.Observation
+import io.micrometer.observation.ObservationHandler
+import io.micrometer.observation.ObservationRegistry
 import io.mockk.every
 import io.mockk.mockk
+import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.http.MediaType
 import org.springframework.test.web.servlet.MockMvc
@@ -18,6 +29,7 @@ import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
 import java.nio.file.Path
 import java.time.Instant
+import java.util.concurrent.CopyOnWriteArrayList
 
 class AgentControllerTest {
     private val sessions = mockk<AgentSessionManager>()
@@ -170,5 +182,106 @@ class AgentControllerTest {
                     .content("""{"content":"","name":"source.txt"}"""),
             ).andExpect(status().isBadRequest)
             .andExpect(jsonPath("$.error").value("staged input content is empty"))
+    }
+
+    @Test
+    fun `records REST terminal outcomes with bounded labels`() {
+        val localSessions = mockk<AgentSessionManager>()
+        val telemetry = RecordingTelemetry()
+        val observations = CopyOnWriteArrayList<Map<String, String>>()
+        val observationRegistry =
+            ObservationRegistry.create().apply {
+                observationConfig().observationHandler(
+                    object : ObservationHandler<Observation.Context> {
+                        override fun supportsContext(context: Observation.Context): Boolean = true
+
+                        override fun onStop(context: Observation.Context) {
+                            observations +=
+                                context.lowCardinalityKeyValues.associate { keyValue ->
+                                    keyValue.key to keyValue.value
+                                }
+                        }
+                    },
+                )
+            }
+        val localMvc =
+            MockMvcBuilders
+                .standaloneSetup(AgentController(localSessions, telemetry, observationRegistry))
+                .setControllerAdvice(ErrorAdvice())
+                .build()
+
+        every { localSessions.spawn(AgentKind.SHELL, null, null, null, null) } returns
+            sample.copy(kind = AgentKind.SHELL)
+        every { localSessions.send("abc12345", "hi", true) } returns Unit
+        every { localSessions.cleanupTranscript("11111111-1111-1111-1111-111111111111") } returns true
+        every { localSessions.stop("missing") } returns false
+        every {
+            localSessions.stageInput("abc12345", "", "source.txt")
+        } throws IllegalArgumentException("staged input content is empty")
+        every {
+            localSessions.capture("boom")
+        } throws ProcessFailedException(listOf("tmux"), ProcessRunner.Result(exitCode = 1, stdout = "", stderr = "bad"))
+
+        localMvc
+            .perform(post("/agents").contentType(MediaType.APPLICATION_JSON).content("""{"kind":"SHELL"}"""))
+            .andExpect(status().isCreated)
+        localMvc
+            .perform(
+                post("/agents/abc12345/send")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"input":"hi","enter":true}"""),
+            ).andExpect(status().isAccepted)
+        localMvc
+            .perform(delete("/agents/transcripts/11111111-1111-1111-1111-111111111111"))
+            .andExpect(status().isNoContent)
+        localMvc.perform(delete("/agents/missing")).andExpect(status().isNotFound)
+        localMvc
+            .perform(
+                post("/agents/abc12345/staged-inputs")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("""{"content":"","name":"source.txt"}"""),
+            ).andExpect(status().isBadRequest)
+        localMvc.perform(get("/agents/boom/capture")).andExpect(status().isInternalServerError)
+
+        assertThat(telemetry.operations.map { Triple(it.operation, it.outcome, it.reason) })
+            .contains(
+                Triple(GatewayOperationLabel.SPAWN, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.INPUT, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.REPLAY, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.STOP, GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.NOT_FOUND),
+                Triple(
+                    GatewayOperationLabel.INPUT,
+                    GatewayOutcomeLabel.FAILURE,
+                    GatewayFailureReasonLabel.INVALID_REQUEST,
+                ),
+                Triple(GatewayOperationLabel.REPLAY, GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.UNKNOWN),
+            )
+        assertThat(observations.map { it["outcome"] })
+            .contains("success", "accepted", "no_content", "not_found", "malformed_input", "failure")
+        assertThat(telemetry.operations.flatMap { it.labels() })
+            .doesNotContain(
+                "abc12345",
+                "11111111-1111-1111-1111-111111111111",
+                "/workspace/repo",
+                "source.txt",
+            )
+        assertThat(observations.flatMap { it.values })
+            .doesNotContain(
+                "abc12345",
+                "11111111-1111-1111-1111-111111111111",
+                "/workspace/repo",
+                "source.txt",
+            )
+    }
+
+    private fun GatewayOperationTelemetry.labels(): List<String> =
+        listOf(operation.label, kind.label, mode.label, outcome.label, reason.label)
+
+    private class RecordingTelemetry : AgentGatewayTelemetry {
+        val operations = CopyOnWriteArrayList<GatewayOperationTelemetry>()
+
+        override fun recordOperation(event: GatewayOperationTelemetry) {
+            operations += event
+        }
     }
 }
