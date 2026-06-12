@@ -207,6 +207,7 @@ class TmuxClient(
         session: String,
         file: Path,
     ) {
+        val target = file.toAbsolutePath().normalize()
         runner.run(
             listOf(
                 "tmux",
@@ -216,10 +217,12 @@ class TmuxClient(
                 "-O",
                 "-t",
                 "$session:0.0",
-                "cat >> ${file.toAbsolutePath()}",
+                "cat >> ${shellQuote(target.toString())}",
             ),
         )
     }
 
     fun sessionExists(name: String): Boolean = name in listSessions()
+
+    internal fun shellQuote(value: String): String = "'" + value.replace("'", "'\"'\"'") + "'"
 }

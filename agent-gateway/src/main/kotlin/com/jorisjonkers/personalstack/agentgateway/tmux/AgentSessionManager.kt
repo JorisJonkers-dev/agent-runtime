@@ -1,9 +1,12 @@
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
+import com.jorisjonkers.personalstack.agentgateway.process.ProcessFailedException
+import com.jorisjonkers.personalstack.agentgateway.process.ProcessTimeoutException
 import jakarta.annotation.PreDestroy
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
+import java.io.IOException
 import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
@@ -30,22 +33,21 @@ import kotlin.io.path.Path
 class AgentSessionManager(
     private val tmux: TmuxClient,
     private val props: GatewayProperties,
+    private val transcriptStore: TranscriptStore = TranscriptStore(props),
 ) {
     private val log = LoggerFactory.getLogger(AgentSessionManager::class.java)
     private val sessions = ConcurrentHashMap<String, AgentSession>()
 
-    // The pipe-pane log only conducts the live stream, so it is capped
-    // rather than kept whole: this trims any session log that outgrows
-    // its cap so a long-lived agent cannot fill the runner disk. Active
-    // tailers restart from the new beginning on the next poll.
+    // Durable transcripts are capped by deleting old closed segments.
+    // Legacy non-durable pipe logs are still truncated in place.
     private val trimmer =
         Executors.newSingleThreadScheduledExecutor { r ->
-            Thread(r, "agent-log-trimmer").apply { isDaemon = true }
+            Thread(r, "agent-transcript-maintenance").apply { isDaemon = true }
         }
 
     init {
-        val period = props.tmux.logTrimIntervalSeconds
-        trimmer.scheduleWithFixedDelay(::trimOversizedLogs, period, period, TimeUnit.SECONDS)
+        val period = props.transcripts.trimIntervalSeconds
+        trimmer.scheduleWithFixedDelay(::maintainTranscripts, period, period, TimeUnit.SECONDS)
     }
 
     @PreDestroy
@@ -53,34 +55,96 @@ class AgentSessionManager(
         trimmer.shutdownNow()
     }
 
-    private fun trimOversizedLogs() {
+    private fun maintainTranscripts() {
         val cap = props.tmux.logCapBytes
         sessions.values.forEach { session ->
             runCatching {
-                val file = session.logFile
-                if (Files.exists(file) && Files.size(file) > cap) {
-                    FileChannel.open(file, StandardOpenOption.WRITE).use { it.truncate(0) }
-                    log.info("trimmed agent {} log past {} bytes", session.id, cap)
+                val stableSessionId = session.stableSessionId
+                if (stableSessionId != null) {
+                    val current =
+                        session.transcriptLease
+                            ?.let(transcriptStore::renewLease)
+                            ?.let { session.copy(transcriptLease = it) }
+                            ?: session
+                    if (current !== session) sessions[session.id] = current
+                    transcriptStore.rotateIfNeeded(stableSessionId)
+                    val active = transcriptStore.activeSegmentPath(stableSessionId)
+                    if (active != current.logFile) {
+                        tmux.startPipeToFile(current.tmuxSession, active)
+                        sessions[current.id] = current.copy(logFile = active, transcriptFile = active)
+                        log.info("rotated agent {} transcript pipe to {}", current.id, active)
+                    }
+                    transcriptStore.trimIfNeeded(stableSessionId)
+                } else {
+                    val file = session.logFile
+                    if (Files.exists(file) && Files.size(file) > cap) {
+                        FileChannel.open(file, StandardOpenOption.WRITE).use { it.truncate(0) }
+                        log.info("trimmed agent {} log past {} bytes", session.id, cap)
+                    }
                 }
             }.onFailure { log.warn("trim of {} failed: {}", session.logFile, it.message) }
         }
     }
 
+    // Lease cleanup must stay adjacent to transcript and tmux startup ordering.
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "ThrowsCount")
     fun spawn(
         kind: AgentKind,
         workspacePath: String? = null,
+        stableSessionId: String? = null,
+        epoch: Long? = null,
+        continuation: AgentContinuation? = null,
     ): AgentSession {
         val id = UUID.randomUUID().toString().substring(0, 8)
         val tmuxSession = "agent-$id"
         val cwd = workspacePath ?: props.workspaceRoot
-        val stateDir = tmux.ensureStateDir()
-        val logFile: Path = stateDir.resolve("$tmuxSession.log")
-        Files.deleteIfExists(logFile)
-        Files.createFile(logFile)
+        val durableStableSessionId =
+            stableSessionId?.let(transcriptStore::validateStableSessionId)
+                ?: UUID.randomUUID().toString()
+        val durableEpoch = epoch ?: 1
+        require(durableEpoch > 0) { "epoch must be positive" }
+        val lease = transcriptStore.acquireLease(durableStableSessionId, tmuxSession, durableEpoch)
+        val logFile: Path =
+            try {
+                transcriptStore.open(durableStableSessionId, durableEpoch)
+                if (durableEpoch > 1 || continuation != null) {
+                    transcriptStore.appendContinuationDelimiter(durableStableSessionId, durableEpoch, continuation)
+                }
+                transcriptStore.activeSegmentPath(durableStableSessionId)
+            } catch (e: IOException) {
+                transcriptStore.releaseLease(lease)
+                throw e
+            } catch (e: NumberFormatException) {
+                transcriptStore.releaseLease(lease)
+                throw e
+            } catch (e: IllegalArgumentException) {
+                transcriptStore.releaseLease(lease)
+                throw e
+            } catch (e: IllegalStateException) {
+                transcriptStore.releaseLease(lease)
+                throw e
+            }
 
         val (command, cliSessionId) = commandAndSessionIdFor(kind)
-        tmux.newSession(tmuxSession, command, cwd)
-        tmux.startPipeToFile(tmuxSession, logFile)
+        try {
+            tmux.newSession(tmuxSession, command, cwd)
+            tmux.startPipeToFile(tmuxSession, logFile)
+        } catch (e: IOException) {
+            transcriptStore.releaseLease(lease)
+            throw e
+        } catch (e: InterruptedException) {
+            transcriptStore.releaseLease(lease)
+            throw e
+        } catch (e: ProcessFailedException) {
+            transcriptStore.releaseLease(lease)
+            throw e
+        } catch (e: ProcessTimeoutException) {
+            transcriptStore.releaseLease(lease)
+            throw e
+        } catch (e: SecurityException) {
+            transcriptStore.releaseLease(lease)
+            throw e
+        }
 
         val session =
             AgentSession(
@@ -91,15 +155,33 @@ class AgentSessionManager(
                 cwd = cwd,
                 createdAt = Instant.now(),
                 cliSessionId = cliSessionId,
+                stableSessionId = durableStableSessionId,
+                epoch = durableEpoch,
+                continuation = continuation,
+                transcriptFile = logFile,
+                transcriptLease = lease,
             )
         sessions[id] = session
-        log.info("spawned {} agent {} ({}) in {} cliSessionId={}", kind, id, tmuxSession, cwd, cliSessionId)
+        log.info(
+            "spawned {} agent {} ({}) in {} cliSessionId={} stableSessionId={} epoch={}",
+            kind,
+            id,
+            tmuxSession,
+            cwd,
+            cliSessionId,
+            durableStableSessionId,
+            durableEpoch,
+        )
         return session
     }
 
     fun stop(id: String): Boolean {
         val session = sessions.remove(id) ?: return false
         tmux.killSession(session.tmuxSession)
+        session.stableSessionId?.let {
+            transcriptStore.seal(it)
+            session.transcriptLease?.let(transcriptStore::releaseLease)
+        }
         log.info("stopped agent {}", id)
         return true
     }
@@ -107,6 +189,9 @@ class AgentSessionManager(
     fun get(id: String): AgentSession? = sessions[id]
 
     fun list(): List<AgentSession> = sessions.values.sortedBy { it.createdAt }
+
+    fun cleanupTranscript(stableSessionId: String): Boolean =
+        transcriptStore.cleanup(transcriptStore.validateStableSessionId(stableSessionId))
 
     fun send(
         id: String,

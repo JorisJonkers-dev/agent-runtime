@@ -1,8 +1,10 @@
 package com.jorisjonkers.personalstack.agentgateway.web
 
+import com.jorisjonkers.personalstack.agentgateway.tmux.AgentContinuation
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSession
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
 import com.jorisjonkers.personalstack.agentgateway.web.dto.AgentResponse
+import com.jorisjonkers.personalstack.agentgateway.web.dto.ContinuationMetadata
 import com.jorisjonkers.personalstack.agentgateway.web.dto.SendInputRequest
 import com.jorisjonkers.personalstack.agentgateway.web.dto.SpawnAgentRequest
 import com.jorisjonkers.personalstack.agentgateway.web.dto.StageInputRequest
@@ -29,8 +31,23 @@ class AgentController(
     fun spawn(
         @RequestBody req: SpawnAgentRequest,
     ): ResponseEntity<AgentResponse> {
-        val session = sessions.spawn(req.kind, req.workspacePath)
+        val session =
+            sessions.spawn(
+                req.kind,
+                req.workspacePath,
+                req.stableSessionId,
+                req.epoch,
+                req.continuation?.toDomain(),
+            )
         return ResponseEntity.status(HttpStatus.CREATED).body(toResponse(session))
+    }
+
+    @DeleteMapping("/transcripts/{stableSessionId}")
+    fun cleanupTranscript(
+        @PathVariable stableSessionId: String,
+    ): ResponseEntity<Void> {
+        val ok = sessions.cleanupTranscript(stableSessionId)
+        return if (ok) ResponseEntity.noContent().build() else ResponseEntity.notFound().build()
     }
 
     @GetMapping("/{id}")
@@ -83,5 +100,20 @@ class AgentController(
             cwd = s.cwd,
             createdAt = s.createdAt.toString(),
             cliSessionId = s.cliSessionId,
+            stableSessionId = s.stableSessionId,
+            epoch = s.epoch,
+            continuation = s.continuation?.toDto(),
+        )
+
+    private fun ContinuationMetadata.toDomain() =
+        AgentContinuation(
+            reason = reason,
+            previousEpoch = previousEpoch,
+        )
+
+    private fun AgentContinuation.toDto() =
+        ContinuationMetadata(
+            reason = reason,
+            previousEpoch = previousEpoch,
         )
 }

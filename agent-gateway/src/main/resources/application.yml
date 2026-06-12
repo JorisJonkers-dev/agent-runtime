@@ -56,6 +56,13 @@ agent-gateway:
   staged-inputs:
     dir-name: .agent-inputs
     max-bytes: 5242880
+  transcripts:
+    dir-name: .agent-transcripts
+    segment-bytes: 2097152
+    cap-bytes: 67108864
+    trim-interval-seconds: 30
+    lease-ttl-seconds: 120
+    retention-seconds: 604800
 
 management:
   endpoints:

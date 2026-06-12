@@ -5,6 +5,9 @@ import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 data class SpawnAgentRequest(
     val kind: AgentKind,
     val workspacePath: String? = null,
+    val stableSessionId: String? = null,
+    val epoch: Long? = null,
+    val continuation: ContinuationMetadata? = null,
 )
 
 data class SendInputRequest(
@@ -29,6 +32,14 @@ data class AgentResponse(
     val cwd: String,
     val createdAt: String,
     val cliSessionId: String? = null,
+    val stableSessionId: String? = null,
+    val epoch: Long = 1,
+    val continuation: ContinuationMetadata? = null,
+)
+
+data class ContinuationMetadata(
+    val reason: String? = null,
+    val previousEpoch: Long? = null,
 )
 
 data class CloneRequest(
@@ -70,6 +81,9 @@ data class HeadlessRequest(
     val prompt: String,
     val workspacePath: String? = null,
     val cliSessionId: String? = null,
+    val stableSessionId: String? = null,
+    val epoch: Long? = null,
+    val continuation: ContinuationMetadata? = null,
     val timeoutSeconds: Long? = null,
 )
 

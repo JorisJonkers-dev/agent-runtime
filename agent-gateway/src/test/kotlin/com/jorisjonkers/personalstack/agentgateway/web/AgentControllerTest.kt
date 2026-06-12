@@ -1,5 +1,6 @@
 package com.jorisjonkers.personalstack.agentgateway.web
 
+import com.jorisjonkers.personalstack.agentgateway.tmux.AgentContinuation
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSession
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
@@ -15,7 +16,6 @@ import org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath
 import org.springframework.test.web.servlet.result.MockMvcResultMatchers.status
 import org.springframework.test.web.servlet.setup.MockMvcBuilders
-import tools.jackson.databind.ObjectMapper
 import java.nio.file.Path
 import java.time.Instant
 
@@ -26,7 +26,6 @@ class AgentControllerTest {
             .standaloneSetup(AgentController(sessions))
             .setControllerAdvice(ErrorAdvice())
             .build()
-    private val mapper = ObjectMapper()
 
     private val sample =
         AgentSession(
@@ -36,19 +35,43 @@ class AgentControllerTest {
             logFile = Path.of("/tmp/agent.log"),
             cwd = "/workspace/repo",
             createdAt = Instant.parse("2026-05-19T10:00:00Z"),
+            stableSessionId = "11111111-1111-1111-1111-111111111111",
+            epoch = 2,
+            continuation = AgentContinuation(reason = "restart", previousEpoch = 1),
         )
 
     @Test
     fun `POST agents spawns and returns 201 with session`() {
-        every { sessions.spawn(AgentKind.CLAUDE, "/workspace/repo") } returns sample
+        every {
+            sessions.spawn(
+                AgentKind.CLAUDE,
+                "/workspace/repo",
+                "11111111-1111-1111-1111-111111111111",
+                2,
+                AgentContinuation(reason = "restart", previousEpoch = 1),
+            )
+        } returns sample
         mockMvc
             .perform(
                 post("/agents")
                     .contentType(MediaType.APPLICATION_JSON)
-                    .content("""{"kind":"CLAUDE","workspacePath":"/workspace/repo"}"""),
+                    .content(
+                        """
+                        {
+                          "kind":"CLAUDE",
+                          "workspacePath":"/workspace/repo",
+                          "stableSessionId":"11111111-1111-1111-1111-111111111111",
+                          "epoch":2,
+                          "continuation":{"reason":"restart","previousEpoch":1}
+                        }
+                        """.trimIndent(),
+                    ),
             ).andExpect(status().isCreated)
             .andExpect(jsonPath("$.id").value("abc12345"))
             .andExpect(jsonPath("$.kind").value("CLAUDE"))
+            .andExpect(jsonPath("$.stableSessionId").value("11111111-1111-1111-1111-111111111111"))
+            .andExpect(jsonPath("$.epoch").value(2))
+            .andExpect(jsonPath("$.continuation.reason").value("restart"))
     }
 
     @Test
@@ -70,6 +93,14 @@ class AgentControllerTest {
     fun `DELETE agents id returns 204 on success`() {
         every { sessions.stop("abc12345") } returns true
         mockMvc.perform(delete("/agents/abc12345")).andExpect(status().isNoContent)
+    }
+
+    @Test
+    fun `DELETE transcript cleanup returns 204 on success`() {
+        every { sessions.cleanupTranscript("11111111-1111-1111-1111-111111111111") } returns true
+        mockMvc
+            .perform(delete("/agents/transcripts/11111111-1111-1111-1111-111111111111"))
+            .andExpect(status().isNoContent)
     }
 
     @Test

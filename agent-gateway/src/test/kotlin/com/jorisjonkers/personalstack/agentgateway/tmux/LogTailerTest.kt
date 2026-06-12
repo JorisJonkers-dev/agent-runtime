@@ -1,5 +1,6 @@
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
+import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.Awaitility.await
 import org.junit.jupiter.api.Test
@@ -115,4 +116,54 @@ class LogTailerTest {
             await().atMost(Duration.ofSeconds(2)).until { received.joinToString("") == "-morefresh" }
         }
     }
+
+    @Test
+    fun `transcript tailer emits replay frames with byte accurate offsets`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val store = transcriptStore(tmp)
+        store.open(stable, 1)
+        Files.writeString(store.activeSegmentPath(stable), "abéZ", StandardOpenOption.APPEND)
+        store.recoverMetadata(stable)
+        val frames = CopyOnWriteArrayList<TranscriptTextFrame>()
+
+        TranscriptTailer(store, stable, startOffset = 2, intervalMs = 20, maxChunkChars = 2, onText = frames::add)
+            .use { it.replayAvailable() }
+
+        assertThat(frames.map { it.output }).containsExactly("éZ")
+        assertThat(frames.map { it.off }).containsExactly(5L)
+    }
+
+    @Test
+    fun `transcript tailer carries split utf8 bytes across polls`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val store = transcriptStore(tmp)
+        store.open(stable, 1)
+        val received = CopyOnWriteArrayList<TranscriptTextFrame>()
+        TranscriptTailer(store, stable, startOffset = 0, intervalMs = 20, onText = received::add).use { tailer ->
+            tailer.start()
+            Files.write(
+                store.activeSegmentPath(stable),
+                byteArrayOf(0xE2.toByte(), 0x94.toByte()),
+                StandardOpenOption.APPEND,
+            )
+            Thread.sleep(40)
+            Files.write(store.activeSegmentPath(stable), byteArrayOf(0x80.toByte(), 0x41), StandardOpenOption.APPEND)
+            await().atMost(Duration.ofSeconds(2)).until { received.joinToString("") { it.output } == "─A" }
+            assertThat(received.last().off).isEqualTo(4)
+        }
+    }
+
+    private fun transcriptStore(tmp: Path): TranscriptStore =
+        TranscriptStore(
+            GatewayProperties(
+                workspaceRoot = tmp.toString(),
+                tmux = GatewayProperties.Tmux(socketName = "agent-gw", stateDir = tmp.resolve("tmux").toString()),
+                cli = GatewayProperties.Cli(claude = "claude", codex = "codex"),
+                git = GatewayProperties.Git(deployKeyDir = "/x"),
+            ),
+        )
 }

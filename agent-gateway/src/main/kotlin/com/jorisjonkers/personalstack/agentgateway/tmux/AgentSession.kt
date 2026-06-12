@@ -15,4 +15,14 @@ data class AgentSession(
     // --session-id flag); null for Shell sessions and for Codex until
     // async discovery is implemented.
     val cliSessionId: String? = null,
+    val stableSessionId: String? = null,
+    val epoch: Long = 1,
+    val continuation: AgentContinuation? = null,
+    val transcriptFile: Path? = null,
+    val transcriptLease: TranscriptLease? = null,
+)
+
+data class AgentContinuation(
+    val reason: String? = null,
+    val previousEpoch: Long? = null,
 )

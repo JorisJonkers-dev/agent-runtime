@@ -19,10 +19,13 @@ class AgentSessionManagerTest {
     private fun manager(
         tmp: Path,
         stagedInputs: GatewayProperties.StagedInputs = GatewayProperties.StagedInputs(),
+        transcripts: GatewayProperties.Transcripts = GatewayProperties.Transcripts(trimIntervalSeconds = 1),
     ): AgentSessionManager {
+        val workspace = tmp.resolve("workspace")
+        Files.createDirectories(workspace)
         val props =
             GatewayProperties(
-                workspaceRoot = "/workspace",
+                workspaceRoot = workspace.toString(),
                 tmux = GatewayProperties.Tmux(socketName = "agent-gw", stateDir = tmp.toString()),
                 cli =
                     GatewayProperties.Cli(
@@ -37,8 +40,8 @@ class AgentSessionManagerTest {
                     ),
                 git = GatewayProperties.Git(deployKeyDir = "/x"),
                 stagedInputs = stagedInputs,
+                transcripts = transcripts,
             )
-        every { tmux.ensureStateDir() } returns tmp
         return AgentSessionManager(tmux, props)
     }
 
@@ -51,7 +54,8 @@ class AgentSessionManagerTest {
         assertThat(s.kind).isEqualTo(AgentKind.CLAUDE)
         assertThat(s.tmuxSession).isEqualTo("agent-${s.id}")
         assertThat(s.cwd).isEqualTo("/workspace/repo")
-        assertThat(s.logFile.parent).isEqualTo(tmp)
+        assertThat(s.stableSessionId).isNotNull()
+        assertThat(s.logFile.toString()).contains(".agent-transcripts")
         assertThat(s.cliSessionId).isNotNull()
         verify {
             tmux.newSession(
@@ -86,7 +90,7 @@ class AgentSessionManagerTest {
                         cmd.contains("--session-id") &&
                         cmd[cmd.indexOf("--session-id") + 1] == s.cliSessionId
                 },
-                "/workspace",
+                tmp.resolve("workspace").toString(),
             )
         }
     }
@@ -106,7 +110,7 @@ class AgentSessionManagerTest {
                         cmd[cmd.indexOf("--session-id") + 1] == s.cliSessionId &&
                         !cmd.contains("--resume")
                 },
-                "/workspace",
+                tmp.resolve("workspace").toString(),
             )
         }
     }
@@ -132,7 +136,7 @@ class AgentSessionManagerTest {
                         !cmd.contains("resume") &&
                         !cmd.contains("--last")
                 },
-                "/workspace",
+                tmp.resolve("workspace").toString(),
             )
         }
     }
@@ -153,7 +157,7 @@ class AgentSessionManagerTest {
                     "--dangerously-bypass-approvals-and-sandbox",
                     "--dangerously-bypass-hook-trust",
                 ),
-                "/workspace",
+                tmp.resolve("workspace").toString(),
             )
         }
     }
@@ -165,7 +169,7 @@ class AgentSessionManagerTest {
         val mgr = manager(tmp)
         val s = mgr.spawn(AgentKind.SHELL)
         assertThat(s.cliSessionId).isNull()
-        verify { tmux.newSession(s.tmuxSession, listOf("/bin/bash", "-l"), "/workspace") }
+        verify { tmux.newSession(s.tmuxSession, listOf("/bin/bash", "-l"), tmp.resolve("workspace").toString()) }
     }
 
     @Test
@@ -174,7 +178,7 @@ class AgentSessionManagerTest {
     ) {
         val mgr = manager(tmp)
         val s = mgr.spawn(AgentKind.CODEX)
-        assertThat(s.cwd).isEqualTo("/workspace")
+        assertThat(s.cwd).isEqualTo(tmp.resolve("workspace").toString())
     }
 
     @Test
@@ -186,6 +190,7 @@ class AgentSessionManagerTest {
         assertThat(mgr.stop(s.id)).isTrue
         assertThat(mgr.get(s.id)).isNull()
         verify { tmux.killSession(s.tmuxSession) }
+        assertThat(Files.exists(s.logFile)).isTrue
     }
 
     @Test
@@ -280,28 +285,87 @@ class AgentSessionManagerTest {
     fun `trims a session log once it outgrows its disk cap`(
         @TempDir tmp: Path,
     ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
         val props =
             GatewayProperties(
-                workspaceRoot = "/workspace",
+                workspaceRoot = tmp.resolve("workspace").also { Files.createDirectories(it) }.toString(),
                 tmux =
                     GatewayProperties.Tmux(
                         socketName = "agent-gw",
                         stateDir = tmp.toString(),
-                        logCapBytes = 64,
-                        logTrimIntervalSeconds = 1,
                     ),
                 cli = GatewayProperties.Cli(claude = "/c", codex = "/x"),
                 git = GatewayProperties.Git(deployKeyDir = "/x"),
+                transcripts =
+                    GatewayProperties.Transcripts(
+                        segmentBytes = 64,
+                        capBytes = 64,
+                        trimIntervalSeconds = 1,
+                    ),
             )
-        every { tmux.ensureStateDir() } returns tmp
-        val mgr = AgentSessionManager(tmux, props)
+        val store = TranscriptStore(props)
+        val mgr = AgentSessionManager(tmux, props, store)
         try {
-            val s = mgr.spawn(AgentKind.SHELL)
-            Files.write(s.logFile, ByteArray(200) { 'x'.code.toByte() })
-            assertThat(Files.size(s.logFile)).isEqualTo(200L)
-            await().atMost(Duration.ofSeconds(5)).until { Files.size(s.logFile) == 0L }
+            val s = mgr.spawn(AgentKind.SHELL, stableSessionId = stable)
+            val firstSegment = store.activeSegmentPath(requireNotNull(s.stableSessionId))
+            val payload = ByteArray(96) { 'x'.code.toByte() }
+            assertThat(firstSegment).isEqualTo(s.logFile)
+
+            Files.write(firstSegment, payload)
+
+            await().atMost(Duration.ofSeconds(5)).until {
+                val current = mgr.get(s.id)
+                current != null &&
+                    current.logFile != firstSegment &&
+                    !Files.exists(firstSegment) &&
+                    store.recoverMetadata(stable).logicalStart == payload.size.toLong()
+            }
+            val current = requireNotNull(mgr.get(s.id))
+            val metadata = store.recoverMetadata(stable)
+            assertThat(current.logFile).isEqualTo(store.activeSegmentPath(stable))
+            assertThat(current.transcriptFile).isEqualTo(current.logFile)
+            assertThat(metadata.logicalStart).isEqualTo(payload.size.toLong())
+            assertThat(metadata.byteCount).isLessThanOrEqualTo(props.transcripts.capBytes)
+            assertThat(Files.size(current.logFile)).isLessThanOrEqualTo(props.transcripts.segmentBytes)
         } finally {
             mgr.shutdown()
         }
+    }
+
+    @Test
+    fun `spawn rejects malformed stable session id`(
+        @TempDir tmp: Path,
+    ) {
+        val mgr = manager(tmp)
+
+        assertThatThrownBy { mgr.spawn(AgentKind.SHELL, stableSessionId = "not-a-uuid") }
+            .isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    @Test
+    fun `spawn writes one continuation delimiter per epoch`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val mgr = manager(tmp)
+        val first =
+            mgr.spawn(
+                AgentKind.SHELL,
+                stableSessionId = stable,
+                epoch = 2,
+                continuation = AgentContinuation(reason = "restart", previousEpoch = 1),
+            )
+        mgr.stop(first.id)
+
+        val second =
+            mgr.spawn(
+                AgentKind.SHELL,
+                stableSessionId = stable,
+                epoch = 2,
+                continuation = AgentContinuation(reason = "restart", previousEpoch = 1),
+            )
+
+        val text = Files.readString(second.logFile)
+        assertThat(Regex("continuation epoch=2").findAll(text).toList()).hasSize(1)
     }
 }

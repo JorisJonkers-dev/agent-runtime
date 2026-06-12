@@ -125,4 +125,16 @@ class TmuxClientTest {
         val dir = tmuxWithTmp.ensureStateDir()
         assertThat(File(dir.toString())).exists().isDirectory()
     }
+
+    @Test
+    fun `startPipeToFile quotes the gateway generated path for tmux shell`() {
+        val argv = slot<List<String>>()
+        every { runner.run(capture(argv), any(), any(), any(), any()) } returns
+            ProcessRunner.Result(0, "", "")
+
+        client.startPipeToFile("agent-abc", Path.of("/workspace/.agent-transcripts/id/seg'ment.log"))
+
+        assertThat(argv.captured).containsSubsequence("pipe-pane", "-O", "-t", "agent-abc:0.0")
+        assertThat(argv.captured.last()).isEqualTo("cat >> '/workspace/.agent-transcripts/id/seg'\"'\"'ment.log'")
+    }
 }

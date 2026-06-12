@@ -4,6 +4,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 
 private const val DEFAULT_LOG_CAP_BYTES = 8L * 1024 * 1024
 private const val DEFAULT_STAGED_INPUT_MAX_BYTES = 5L * 1024 * 1024
+private const val DEFAULT_TRANSCRIPT_SEGMENT_BYTES = 2L * 1024 * 1024
+private const val DEFAULT_TRANSCRIPT_CAP_BYTES = 64L * 1024 * 1024
+private const val DEFAULT_TRANSCRIPT_RETENTION_SECONDS = 7L * 24 * 60 * 60
 
 @ConfigurationProperties(prefix = "agent-gateway")
 data class GatewayProperties(
@@ -12,6 +15,7 @@ data class GatewayProperties(
     val cli: Cli,
     val git: Git,
     val stagedInputs: StagedInputs = StagedInputs(),
+    val transcripts: Transcripts = Transcripts(),
 ) {
     data class Tmux(
         val socketName: String,
@@ -45,5 +49,14 @@ data class GatewayProperties(
     data class StagedInputs(
         val dirName: String = ".agent-inputs",
         val maxBytes: Long = DEFAULT_STAGED_INPUT_MAX_BYTES,
+    )
+
+    data class Transcripts(
+        val dirName: String = ".agent-transcripts",
+        val segmentBytes: Long = DEFAULT_TRANSCRIPT_SEGMENT_BYTES,
+        val capBytes: Long = DEFAULT_TRANSCRIPT_CAP_BYTES,
+        val trimIntervalSeconds: Long = 30,
+        val leaseTtlSeconds: Long = 120,
+        val retentionSeconds: Long = DEFAULT_TRANSCRIPT_RETENTION_SECONDS,
     )
 }

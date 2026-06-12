@@ -3,6 +3,8 @@ package com.jorisjonkers.personalstack.agentgateway.ws
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
 import com.jorisjonkers.personalstack.agentgateway.tmux.LogTailer
+import com.jorisjonkers.personalstack.agentgateway.tmux.TranscriptStore
+import com.jorisjonkers.personalstack.agentgateway.tmux.TranscriptTailer
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 import org.springframework.web.socket.CloseStatus
@@ -10,11 +12,14 @@ import org.springframework.web.socket.TextMessage
 import org.springframework.web.socket.WebSocketSession
 import org.springframework.web.socket.handler.TextWebSocketHandler
 import tools.jackson.databind.ObjectMapper
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
 
 /**
  * One WS per client-attach. Inbound JSON is `{"input": "...", "enter":
- * true}`; outbound JSON is `{"output": "...bytes-as-utf8..."}`. The
+ * true}`; outbound JSON is control/cursor/trim metadata plus
+ * `{"output": "...bytes-as-utf8...", "off": 123}` for durable sessions. The
  * envelope intentionally stays trivial — the rich Block protocol
  * (Step 7) lives one layer up, inside agents-api, which parses the
  * agent's stdout for fenced JSON blocks and emits Block frames to the
@@ -26,9 +31,10 @@ class AgentAttachHandler(
     private val sessions: AgentSessionManager,
     private val mapper: ObjectMapper,
     private val props: GatewayProperties,
+    private val transcriptStore: TranscriptStore = TranscriptStore(props),
 ) : TextWebSocketHandler() {
     private val log = LoggerFactory.getLogger(AgentAttachHandler::class.java)
-    private val tailers = ConcurrentHashMap<String, LogTailer>()
+    private val tailers = ConcurrentHashMap<String, AutoCloseable>()
 
     override fun afterConnectionEstablished(session: WebSocketSession) {
         val agentId =
@@ -42,6 +48,12 @@ class AgentAttachHandler(
                 return
             }
         log.info("ws attach to agent {} (tmux={})", agentId, agent.tmuxSession)
+
+        val stableSessionId = agent.stableSessionId
+        if (stableSessionId != null) {
+            attachDurable(session, stableSessionId, agent.epoch)
+            return
+        }
 
         // One current-screen snapshot (with ANSI) so the TUI renders
         // immediately; the EOF-based tailer then streams only new bytes,
@@ -76,9 +88,82 @@ class AgentAttachHandler(
         text: String,
     ) {
         if (text.isEmpty() || !session.isOpen) return
-        val msg = mapper.writeValueAsString(mapOf("output" to text))
+        sendJson(session, mapOf("output" to text))
+    }
+
+    // Durable attach sends control frames before starting the transcript tailer.
+    @Suppress("LongMethod")
+    private fun attachDurable(
+        session: WebSocketSession,
+        stableSessionId: String,
+        epoch: Long,
+    ) {
+        val metadata = transcriptStore.recoverMetadata(stableSessionId)
+        val query = queryOf(session)
+        val requestedCursor = parseCursor(query)
+        val mode = query["mode"]?.uppercase()
+        val canResume = requestedCursor != null && requestedCursor in metadata.logicalStart..metadata.logicalEnd
+        val resume = (mode == "RESUME" || mode == null) && canResume
+        val replayStart = if (resume) requestedCursor else metadata.logicalStart
+        val control = if (resume) "RESUME" else "SNAPSHOT"
+
+        sendJson(
+            session,
+            mapOf(
+                "control" to control,
+                "stableSessionId" to stableSessionId,
+                "epoch" to epoch,
+                "start" to metadata.logicalStart,
+                "end" to metadata.logicalEnd,
+            ),
+        )
+        if (!resume) sendJson(session, mapOf("reset" to true))
+        if (metadata.logicalStart > 0) sendJson(session, mapOf("trim" to metadata.logicalStart))
+        sendJson(session, mapOf("cursor" to replayStart))
+
+        val tailer =
+            TranscriptTailer(
+                transcriptStore,
+                stableSessionId,
+                replayStart,
+                intervalMs = props.tmux.tailIntervalMs,
+                onTrim = { sendJson(session, mapOf("trim" to it, "cursor" to it)) },
+            ) { frame ->
+                sendJson(session, mapOf("output" to frame.output, "off" to frame.off))
+            }
+        tailers[session.id] = tailer
+        tailer.replayAvailable()
+        tailer.start()
+    }
+
+    private fun sendJson(
+        session: WebSocketSession,
+        payload: Map<String, Any?>,
+    ) {
+        if (!session.isOpen) return
+        val msg = mapper.writeValueAsString(payload)
         synchronized(session) { session.sendMessage(TextMessage(msg)) }
     }
+
+    private fun queryOf(session: WebSocketSession): Map<String, String> =
+        session.uri
+            ?.rawQuery
+            ?.split('&')
+            ?.filter { it.isNotBlank() }
+            ?.mapNotNull { part ->
+                val pieces = part.split('=', limit = 2)
+                val key = decodeQuery(pieces[0]).takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                val value = if (pieces.size == 2) decodeQuery(pieces[1]) else ""
+                key to value
+            }?.toMap()
+            ?: emptyMap()
+
+    private fun parseCursor(query: Map<String, String>): Long? {
+        val raw = query["cursor"] ?: query["off"] ?: return null
+        return raw.toLongOrNull()
+    }
+
+    private fun decodeQuery(value: String): String = URLDecoder.decode(value, StandardCharsets.UTF_8)
 
     override fun handleTextMessage(
         session: WebSocketSession,
