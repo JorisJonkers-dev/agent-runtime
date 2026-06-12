@@ -100,11 +100,15 @@ class AgentAttachHandler(
     ) {
         val metadata = transcriptStore.recoverMetadata(stableSessionId)
         val query = queryOf(session)
-        val requestedCursor = parseCursor(query)
+        val requestedOffset = parseOffset(query)
+        val requestedEpoch = parseEpoch(query)
         val mode = query["mode"]?.uppercase()
-        val canResume = requestedCursor != null && requestedCursor in metadata.logicalStart..metadata.logicalEnd
+        val canResume =
+            requestedEpoch == epoch &&
+                requestedOffset != null &&
+                requestedOffset in metadata.logicalStart..metadata.logicalEnd
         val resume = (mode == "RESUME" || mode == null) && canResume
-        val replayStart = if (resume) requestedCursor else metadata.logicalStart
+        val replayStart = if (resume) requestedOffset else metadata.logicalStart
         val control = if (resume) "RESUME" else "SNAPSHOT"
 
         sendJson(
@@ -133,6 +137,13 @@ class AgentAttachHandler(
             }
         tailers[session.id] = tailer
         tailer.replayAvailable()
+        sendJson(
+            session,
+            mapOf(
+                "control" to "REPLAY_COMPLETE",
+                "cursor" to transcriptStore.recoverMetadata(stableSessionId).logicalEnd,
+            ),
+        )
         tailer.start()
     }
 
@@ -158,10 +169,12 @@ class AgentAttachHandler(
             }?.toMap()
             ?: emptyMap()
 
-    private fun parseCursor(query: Map<String, String>): Long? {
-        val raw = query["cursor"] ?: query["off"] ?: return null
+    private fun parseOffset(query: Map<String, String>): Long? {
+        val raw = query["offset"] ?: query["cursor"] ?: query["off"] ?: return null
         return raw.toLongOrNull()
     }
+
+    private fun parseEpoch(query: Map<String, String>): Long? = query["epoch"]?.toLongOrNull()
 
     private fun decodeQuery(value: String): String = URLDecoder.decode(value, StandardCharsets.UTF_8)
 

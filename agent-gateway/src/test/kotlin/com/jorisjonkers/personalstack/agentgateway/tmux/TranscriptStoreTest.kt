@@ -151,4 +151,20 @@ class TranscriptStoreTest {
         assertThat(store.cleanup(stable)).isTrue
         assertThat(Files.exists(path)).isFalse
     }
+
+    @Test
+    fun `continuation delimiter includes updated restart marker once per epoch`(
+        @TempDir tmp: Path,
+    ) {
+        val store = store(tmp)
+        val stable = "11111111-1111-1111-1111-111111111111"
+        store.open(stable, 2)
+
+        store.appendContinuationDelimiter(stable, 2, AgentContinuation(reason = "restart", previousEpoch = 1))
+        store.appendContinuationDelimiter(stable, 2, AgentContinuation(reason = "restart", previousEpoch = 1))
+
+        val text = Files.readString(store.activeSegmentPath(stable))
+        assertThat(Regex("continuation epoch=2").findAll(text).toList()).hasSize(1)
+        assertThat(Regex("agent restarted \\(updated setup\\)").findAll(text).toList()).hasSize(1)
+    }
 }

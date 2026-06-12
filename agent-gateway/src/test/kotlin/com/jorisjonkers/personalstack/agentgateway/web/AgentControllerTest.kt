@@ -104,6 +104,14 @@ class AgentControllerTest {
     }
 
     @Test
+    fun `DELETE transcript cleanup returns 404 when stable session is unknown`() {
+        every { sessions.cleanupTranscript("22222222-2222-2222-2222-222222222222") } returns false
+        mockMvc
+            .perform(delete("/agents/transcripts/22222222-2222-2222-2222-222222222222"))
+            .andExpect(status().isNotFound)
+    }
+
+    @Test
     fun `POST agents id send returns 202`() {
         every { sessions.send("abc12345", "hi", true) } returns Unit
         mockMvc

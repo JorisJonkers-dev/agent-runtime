@@ -153,6 +153,7 @@ class TranscriptStore
                         append("\r\n")
                         append("[agent-gateway continuation epoch=")
                         append(epoch)
+                        append(" agent restarted (updated setup)")
                         continuation?.previousEpoch?.let { append(" previousEpoch=").append(it) }
                         continuation?.reason?.takeIf { it.isNotBlank() }?.let {
                             append(" reason=").append(it.replace(Regex("\\s+"), " ").take(MAX_REASON_CHARS))
