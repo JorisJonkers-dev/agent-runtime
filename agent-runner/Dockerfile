@@ -14,7 +14,7 @@
 # `agent-runners` NetworkPolicy + the credential PVCs being mounted
 # only where they are needed.
 
-FROM gradle:9.4-jdk21-alpine AS gateway-build
+FROM gradle:9.5.1-jdk21-alpine AS gateway-build
 WORKDIR /app
 COPY settings.gradle.kts build.gradle.kts gradle.properties* ./
 COPY gradle/ gradle/

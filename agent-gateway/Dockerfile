@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM gradle:9.4-jdk21-alpine AS build
+FROM gradle:9.5.1-jdk21-alpine AS build
 WORKDIR /app
 
 COPY settings.gradle.kts build.gradle.kts gradle.properties* ./
