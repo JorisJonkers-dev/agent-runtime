@@ -153,7 +153,7 @@ class TranscriptStoreTest {
     }
 
     @Test
-    fun `continuation delimiter includes updated restart marker once per epoch`(
+    fun `continuation delimiter marks ordinary restart once per epoch`(
         @TempDir tmp: Path,
     ) {
         val store = store(tmp)
@@ -165,6 +165,69 @@ class TranscriptStoreTest {
 
         val text = Files.readString(store.activeSegmentPath(stable))
         assertThat(Regex("continuation epoch=2").findAll(text).toList()).hasSize(1)
-        assertThat(Regex("agent restarted \\(updated setup\\)").findAll(text).toList()).hasSize(1)
+        assertThat(Regex("agent restarted").findAll(text).toList()).hasSize(1)
+        assertThat(text).doesNotContain("updated setup")
+        assertThat(text).doesNotContain("setup transition")
+    }
+
+    @Test
+    fun `continuation delimiter does not infer setup transition from reason without labels`(
+        @TempDir tmp: Path,
+    ) {
+        val store = store(tmp)
+        val stable = "11111111-1111-1111-1111-111111111111"
+        store.open(stable, 2)
+
+        store.appendContinuationDelimiter(
+            stable,
+            2,
+            AgentContinuation(
+                reason = "setup-transition",
+                previousEpoch = 1,
+            ),
+        )
+
+        val text = Files.readString(store.activeSegmentPath(stable))
+        assertThat(text).contains("agent restarted")
+        assertThat(text).doesNotContain("setup transition")
+    }
+
+    @Test
+    fun `continuation delimiter includes redacted setup transition labels`(
+        @TempDir tmp: Path,
+    ) {
+        val store = store(tmp)
+        val stable = "11111111-1111-1111-1111-111111111111"
+        store.open(stable, 2)
+
+        store.appendContinuationDelimiter(
+            stable,
+            2,
+            AgentContinuation(
+                reason = "restart secret=supersecret",
+                previousEpoch = 1,
+                fromSetupLabel = "Default runner token=ghp_1234567890123456",
+                toSetupLabel = "GPU runner",
+            ),
+        )
+        store.appendContinuationDelimiter(
+            stable,
+            2,
+            AgentContinuation(
+                reason = "restart secret=supersecret",
+                previousEpoch = 1,
+                fromSetupLabel = "Default runner token=ghp_1234567890123456",
+                toSetupLabel = "GPU runner",
+            ),
+        )
+
+        val text = Files.readString(store.activeSegmentPath(stable))
+        assertThat(Regex("continuation epoch=2").findAll(text).toList()).hasSize(1)
+        assertThat(text).contains("setup transition")
+        assertThat(text).contains("fromSetup=\"Default runner token=[redacted]\"")
+        assertThat(text).contains("toSetup=\"GPU runner\"")
+        assertThat(text).contains("reason=restart secret=[redacted]")
+        assertThat(text).doesNotContain("ghp_1234567890123456")
+        assertThat(text).doesNotContain("supersecret")
     }
 }

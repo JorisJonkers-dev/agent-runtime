@@ -37,7 +37,13 @@ class AgentControllerTest {
             createdAt = Instant.parse("2026-05-19T10:00:00Z"),
             stableSessionId = "11111111-1111-1111-1111-111111111111",
             epoch = 2,
-            continuation = AgentContinuation(reason = "restart", previousEpoch = 1),
+            continuation =
+                AgentContinuation(
+                    reason = "restart",
+                    previousEpoch = 1,
+                    fromSetupLabel = "Default runner",
+                    toSetupLabel = "GPU runner",
+                ),
         )
 
     @Test
@@ -48,7 +54,12 @@ class AgentControllerTest {
                 "/workspace/repo",
                 "11111111-1111-1111-1111-111111111111",
                 2,
-                AgentContinuation(reason = "restart", previousEpoch = 1),
+                AgentContinuation(
+                    reason = "restart",
+                    previousEpoch = 1,
+                    fromSetupLabel = "Default runner",
+                    toSetupLabel = "GPU runner",
+                ),
             )
         } returns sample
         mockMvc
@@ -62,7 +73,12 @@ class AgentControllerTest {
                           "workspacePath":"/workspace/repo",
                           "stableSessionId":"11111111-1111-1111-1111-111111111111",
                           "epoch":2,
-                          "continuation":{"reason":"restart","previousEpoch":1}
+                          "continuation":{
+                            "reason":"restart",
+                            "previousEpoch":1,
+                            "fromSetupLabel":"Default runner",
+                            "toSetupLabel":"GPU runner"
+                          }
                         }
                         """.trimIndent(),
                     ),
@@ -72,6 +88,8 @@ class AgentControllerTest {
             .andExpect(jsonPath("$.stableSessionId").value("11111111-1111-1111-1111-111111111111"))
             .andExpect(jsonPath("$.epoch").value(2))
             .andExpect(jsonPath("$.continuation.reason").value("restart"))
+            .andExpect(jsonPath("$.continuation.fromSetupLabel").value("Default runner"))
+            .andExpect(jsonPath("$.continuation.toSetupLabel").value("GPU runner"))
     }
 
     @Test

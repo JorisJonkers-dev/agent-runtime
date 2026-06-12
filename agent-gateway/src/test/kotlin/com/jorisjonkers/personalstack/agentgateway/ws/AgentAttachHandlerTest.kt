@@ -285,6 +285,8 @@ class AgentAttachHandlerTest {
 
         assertThat(sent[0].payload).contains("\"control\":\"SNAPSHOT\"")
         assertThat(sent.any { it.payload.contains("\"reset\":true") }).isTrue
+
+        durableHandler.afterConnectionClosed(ws, org.springframework.web.socket.CloseStatus.NORMAL)
     }
 
     @Test

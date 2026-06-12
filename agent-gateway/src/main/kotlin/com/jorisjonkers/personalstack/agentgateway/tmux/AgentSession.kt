@@ -25,4 +25,6 @@ data class AgentSession(
 data class AgentContinuation(
     val reason: String? = null,
     val previousEpoch: Long? = null,
+    val fromSetupLabel: String? = null,
+    val toSetupLabel: String? = null,
 )

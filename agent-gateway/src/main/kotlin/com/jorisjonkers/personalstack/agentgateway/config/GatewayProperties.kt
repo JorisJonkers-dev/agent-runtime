@@ -14,6 +14,7 @@ data class GatewayProperties(
     val tmux: Tmux,
     val cli: Cli,
     val git: Git,
+    val runner: Runner = Runner(),
     val stagedInputs: StagedInputs = StagedInputs(),
     val transcripts: Transcripts = Transcripts(),
 ) {
@@ -44,6 +45,13 @@ data class GatewayProperties(
 
     data class Git(
         val deployKeyDir: String,
+    )
+
+    data class Runner(
+        val setupId: String = "",
+        val setupVersion: Long = 0,
+        val setupHash: String = "",
+        val generation: Long = 0,
     )
 
     data class StagedInputs(

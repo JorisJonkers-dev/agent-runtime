@@ -109,11 +109,15 @@ class AgentController(
         AgentContinuation(
             reason = reason,
             previousEpoch = previousEpoch,
+            fromSetupLabel = fromSetupLabel,
+            toSetupLabel = toSetupLabel,
         )
 
     private fun AgentContinuation.toDto() =
         ContinuationMetadata(
             reason = reason,
             previousEpoch = previousEpoch,
+            fromSetupLabel = fromSetupLabel,
+            toSetupLabel = toSetupLabel,
         )
 }
