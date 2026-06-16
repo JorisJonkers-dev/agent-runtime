@@ -208,9 +208,21 @@ class AgentAttachHandler(
         val canResume =
             requestedEpoch.value == epoch &&
                 requestedOffset.value != null &&
-                requestedOffset.value in metadata.logicalStart..metadata.logicalEnd
+                requestedOffset.value in metadata.logicalStart..metadata.logicalEnd &&
+                metadata.logicalEnd - requestedOffset.value <= MAX_RESUME_REPLAY_BYTES
         val resume = (mode == "RESUME" || mode == null) && canResume
-        val replayStart = if (resume) requestedOffset.value else metadata.logicalStart
+        // Cold/snapshot attach used to replay from logicalStart — the entire
+        // retained transcript (up to the ~50MB cap). For a TUI that repaints
+        // the whole pane continuously that is megabytes of escape sequences
+        // the browser must parse on the main thread before it can even echo a
+        // keystroke, so perceived lag scaled with session age. Bound the cold
+        // replay to a recent tail window instead: a screenful of repaints
+        // lives well inside it, and attach cost becomes constant regardless of
+        // how long the session has run. (Resume from a live client's own
+        // offset is unchanged, but is itself capped above so a long-absent
+        // client falls back to this bounded snapshot rather than a huge gap.)
+        val coldStart = maxOf(metadata.logicalStart, metadata.logicalEnd - MAX_COLD_REPLAY_BYTES)
+        val replayStart = if (resume) requestedOffset.value else coldStart
         val control = if (resume) "RESUME" else "SNAPSHOT"
 
         runCatching {
@@ -572,4 +584,18 @@ class AgentAttachHandler(
         val value: Long? = null,
         val malformed: Boolean = false,
     )
+
+    companion object {
+        // Upper bound on bytes replayed into the browser on a cold/snapshot
+        // attach. A full-screen TUI repaint is tens of KiB, so 512 KiB always
+        // contains at least one complete repaint while keeping main-thread
+        // parse cost constant instead of O(session history).
+        internal const val MAX_COLD_REPLAY_BYTES = 512L * 1024L
+
+        // A resuming client whose offset is further than this behind the live
+        // end has effectively been away too long to "catch up" cheaply; treat
+        // it as cold and send the bounded snapshot instead of replaying the
+        // whole gap.
+        internal const val MAX_RESUME_REPLAY_BYTES = 512L * 1024L
+    }
 }

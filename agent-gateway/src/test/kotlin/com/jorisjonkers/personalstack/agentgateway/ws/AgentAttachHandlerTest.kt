@@ -149,6 +149,38 @@ class AgentAttachHandlerTest {
     }
 
     @Test
+    fun `durable cold attach caps replay to a recent tail of a long transcript`(
+        @TempDir tmp: Path,
+    ) {
+        val stable = "11111111-1111-1111-1111-111111111111"
+        val store = transcriptStore(tmp)
+        store.open(stable, 1)
+        val total = AgentAttachHandler.MAX_COLD_REPLAY_BYTES + 10
+        Files.writeString(
+            store.activeSegmentPath(stable),
+            "x".repeat(total.toInt()),
+            StandardOpenOption.APPEND,
+        )
+        store.recoverMetadata(stable)
+        val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
+        val ws = wsSession("abc")
+        every { sessions.get("abc") } returns agent("abc", tmp, stableSessionId = stable)
+        val sent = mutableListOf<TextMessage>()
+        every { ws.sendMessage(capture(sent)) } returns Unit
+
+        durableHandler.afterConnectionEstablished(ws)
+
+        assertThat(sent[0].payload).contains("\"control\":\"SNAPSHOT\"")
+        // The replay tails in a bounded window from the end instead of from
+        // offset 0, so attach cost does not grow with the transcript length.
+        val expectedStart = total - AgentAttachHandler.MAX_COLD_REPLAY_BYTES
+        assertThat(sent.any { it.payload.contains("\"cursor\":$expectedStart") }).isTrue
+        assertThat(sent.none { it.payload.contains("\"cursor\":0") }).isTrue
+
+        durableHandler.afterConnectionClosed(ws, org.springframework.web.socket.CloseStatus.NORMAL)
+    }
+
+    @Test
     fun `durable resume prefers canonical offset over compatibility cursors`(
         @TempDir tmp: Path,
     ) {
