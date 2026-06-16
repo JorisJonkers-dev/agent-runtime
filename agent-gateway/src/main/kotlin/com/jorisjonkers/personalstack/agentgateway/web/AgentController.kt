@@ -76,7 +76,10 @@ class AgentController(
         @PathVariable id: String,
     ): ResponseEntity<AgentResponse> =
         recordRestOperation(GatewayOperationLabel.UNKNOWN) {
-            sessions.get(id)?.let { ResponseEntity.ok(toResponse(it)) }
+            // Only the single-agent lookup carries idleMillis — it's the call
+            // the control plane polls to decide whether a runner is quiet
+            // enough to recycle. The list/create paths skip the extra stat.
+            sessions.get(id)?.let { ResponseEntity.ok(toResponse(it).copy(idleMillis = sessions.idleMillis(id))) }
                 ?: ResponseEntity.notFound().build()
         }
 

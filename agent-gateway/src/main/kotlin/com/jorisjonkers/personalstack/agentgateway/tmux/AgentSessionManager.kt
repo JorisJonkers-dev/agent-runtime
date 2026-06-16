@@ -300,6 +300,23 @@ class AgentSessionManager(
 
     fun list(): List<AgentSession> = sessions.values.sortedBy { it.createdAt }
 
+    /**
+     * Milliseconds since the agent last produced output, derived from the
+     * mtime of the pane's append-only log (tmux `pipe-pane` touches it on
+     * every write, even with no client attached). This is the only signal of
+     * "the agent is between turns / idle" that survives a disconnected client,
+     * so the control plane can hold off recycling a runner until its agent has
+     * gone quiet. Null when the session or its log is unknown — callers treat
+     * an unknown as "not safe to recycle".
+     */
+    fun idleMillis(id: String): Long? {
+        val session = sessions[id] ?: return null
+        return runCatching {
+            val lastWrite = Files.getLastModifiedTime(session.logFile).toMillis()
+            (Instant.now().toEpochMilli() - lastWrite).coerceAtLeast(0L)
+        }.getOrNull()
+    }
+
     fun cleanupTranscript(stableSessionId: String): Boolean {
         val startedAt = Instant.now()
         var outcome = GatewayOutcomeLabel.SUCCESS

@@ -35,6 +35,9 @@ data class AgentResponse(
     val stableSessionId: String? = null,
     val epoch: Long = 1,
     val continuation: ContinuationMetadata? = null,
+    // Milliseconds since the agent last produced output; null when unknown.
+    // The control plane uses this to avoid recycling a runner mid-task.
+    val idleMillis: Long? = null,
 )
 
 data class ContinuationMetadata(
