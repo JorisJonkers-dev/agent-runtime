@@ -19,10 +19,14 @@ import java.util.concurrent.atomic.AtomicLong
  * that safe:
  *
  *  - **Bounded frames.** Each emitted chunk is at most [maxChunkChars]
- *    characters, so a JSON-wrapped output frame stays well under the
- *    default 8 KiB WebSocket buffer. A noisy agent that prints megabytes
- *    streams as many small frames rather than one frame that would force
- *    a multi-megabyte receive buffer per session.
+ *    characters, so a noisy agent that prints megabytes streams as a
+ *    series of bounded frames rather than one frame that would force a
+ *    multi-megabyte receive buffer per session. The bound is sized so a
+ *    JSON-wrapped frame still fits the WebSocket text buffer the bridge
+ *    raises for the output leg (see agents-api `SessionAttachHandler`);
+ *    keeping it generous means a TUI's screenful of redraws ships in a
+ *    couple of frames instead of dozens of 1 KiB ones, which is what made
+ *    rendering lag — every frame is a separate parse + write downstream.
  *  - **UTF-8 boundary carry.** A read can end midway through a multi-byte
  *    codepoint (the box-drawing glyphs a TUI emits are three bytes); the
  *    trailing partial bytes are held back and prepended to the next read
@@ -108,7 +112,7 @@ class LogTailer(
     }
 
     companion object {
-        const val MAX_CHUNK_CHARS = 1024
+        const val MAX_CHUNK_CHARS = 16 * 1024
         private const val MAX_READ_BYTES = 64 * 1024
         private const val BYTE_TO_UNSIGNED_MASK = 0xFF
         private const val NO_UTF8_LEAD_BYTE = -1
