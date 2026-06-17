@@ -40,8 +40,13 @@ class TmuxClientTest {
         assertThat(create).endsWith("claude")
 
         // The pane is pinned to manual sizing so browser resize frames win.
-        val manualSize = calls.single { it.contains("set-option") }
+        val manualSize = calls.single { it.contains("window-size") }
         assertThat(manualSize).containsSubsequence("set-option", "-t", "agent-abc", "window-size", "manual")
+
+        // focus-events on lets the running TUI re-query size and repaint when
+        // the pane regains focus, so a sidebar fold-out actually reflows it.
+        val focusEvents = calls.single { it.contains("focus-events") }
+        assertThat(focusEvents).containsSubsequence("set-option", "-g", "focus-events", "on")
     }
 
     @Test

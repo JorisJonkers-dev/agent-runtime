@@ -66,6 +66,16 @@ class TmuxClient(
             listOf("tmux", "-L", props.tmux.socketName, "set-option", "-t", name, "window-size", "manual"),
             checked = false,
         )
+        // Geometry itself is driven by `resize-window` (which SIGWINCHes the
+        // pane program), not by this option. focus-events on makes tmux forward
+        // terminal focus in/out reports to the running TUI (e.g. Claude Code),
+        // which some TUIs use to pause animations and refresh on focus; without
+        // it they warn that focus reporting is off. Server-global (`-g`) on the
+        // gateway's private socket so it applies to every agent session.
+        runner.run(
+            listOf("tmux", "-L", props.tmux.socketName, "set-option", "-g", "focus-events", "on"),
+            checked = false,
+        )
         log.info("tmux session {} created in {}", name, cwd)
     }
 
