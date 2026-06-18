@@ -59,13 +59,14 @@ class HeadlessJobManager(
         workspacePath: String? = null,
         cliSessionId: String? = null,
         timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS,
+        partialMessages: Boolean = false,
     ): HeadlessJob {
         val id = UUID.randomUUID().toString().substring(0, 8)
         val cwd = File(workspacePath ?: props.workspaceRoot)
         val stateDir = Path.of(props.tmux.stateDir).also { Files.createDirectories(it) }
         val outputFile = stateDir.resolve("headless-$id.jsonl")
         Files.createFile(outputFile)
-        val command = headlessCommandFor(kind, prompt, cliSessionId)
+        val command = headlessCommandFor(kind, prompt, cliSessionId, partialMessages)
         val job =
             HeadlessJob(
                 id = id,
@@ -357,6 +358,7 @@ class HeadlessJobManager(
         kind: AgentKind,
         prompt: String,
         cliSessionId: String?,
+        partialMessages: Boolean = false,
     ): List<String> =
         when (kind) {
             AgentKind.CLAUDE ->
@@ -365,7 +367,8 @@ class HeadlessJobManager(
                     "-p",
                     "--output-format",
                     "stream-json",
-                ) + (cliSessionId?.let { listOf("--resume", it) } ?: emptyList()) +
+                ) + (if (partialMessages) listOf("--include-partial-messages") else emptyList()) +
+                    (cliSessionId?.let { listOf("--resume", it) } ?: emptyList()) +
                     listOf("--", prompt)
 
             AgentKind.CODEX ->

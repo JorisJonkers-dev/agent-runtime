@@ -90,6 +90,9 @@ data class HeadlessRequest(
     val epoch: Long? = null,
     val continuation: ContinuationMetadata? = null,
     val timeoutSeconds: Long? = null,
+    // Opt-in token-level streaming (Claude `--include-partial-messages`).
+    // Default off so existing headless callers are unaffected.
+    val partialMessages: Boolean = false,
 )
 
 data class HeadlessJobResponse(

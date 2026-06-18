@@ -33,6 +33,7 @@ class HeadlessController(
                 workspacePath = req.workspacePath,
                 cliSessionId = req.cliSessionId,
                 timeoutSeconds = req.timeoutSeconds ?: HeadlessJobManager.DEFAULT_TIMEOUT_SECONDS,
+                partialMessages = req.partialMessages,
             )
         return ResponseEntity.status(HttpStatus.CREATED).body(toResponse(job, null))
     }
