@@ -1,7 +1,6 @@
 package com.jorisjonkers.personalstack.agentgateway.headless
 
 import org.slf4j.LoggerFactory
-import org.springframework.http.MediaType
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 import java.io.RandomAccessFile
 import java.nio.file.Path
@@ -58,7 +57,9 @@ class HeadlessOutputStreamer private constructor(
             name: String,
             data: String,
         ) {
-            emitter.send(SseEmitter.event().name(name).data(data, MediaType.APPLICATION_JSON))
+            // Send the raw line/payload verbatim (text/plain). Using APPLICATION_JSON
+            // here would re-serialize the already-JSON string, double-encoding it.
+            emitter.send(SseEmitter.event().name(name).data(data))
         }
 
         override fun complete() {
