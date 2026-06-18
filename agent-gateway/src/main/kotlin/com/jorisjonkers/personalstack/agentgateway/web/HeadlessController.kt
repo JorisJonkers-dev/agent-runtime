@@ -2,9 +2,11 @@ package com.jorisjonkers.personalstack.agentgateway.web
 
 import com.jorisjonkers.personalstack.agentgateway.headless.HeadlessJob
 import com.jorisjonkers.personalstack.agentgateway.headless.HeadlessJobManager
+import com.jorisjonkers.personalstack.agentgateway.headless.HeadlessOutputStreamer
 import com.jorisjonkers.personalstack.agentgateway.web.dto.HeadlessJobResponse
 import com.jorisjonkers.personalstack.agentgateway.web.dto.HeadlessRequest
 import org.springframework.http.HttpStatus
+import org.springframework.http.MediaType
 import org.springframework.http.ResponseEntity
 import org.springframework.web.bind.annotation.DeleteMapping
 import org.springframework.web.bind.annotation.GetMapping
@@ -13,6 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping
 import org.springframework.web.bind.annotation.RequestBody
 import org.springframework.web.bind.annotation.RequestMapping
 import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter
 
 @RestController
 @RequestMapping("/agents/headless")
@@ -46,6 +49,25 @@ class HeadlessController(
                 null
             }
         return ResponseEntity.ok(toResponse(job, output))
+    }
+
+    @GetMapping("/{id}/stream", produces = [MediaType.TEXT_EVENT_STREAM_VALUE])
+    fun stream(
+        @PathVariable id: String,
+    ): ResponseEntity<SseEmitter> {
+        val job = jobs.get(id) ?: return ResponseEntity.notFound().build()
+        val emitter = SseEmitter(HeadlessOutputStreamer.TIMEOUT_MILLIS)
+        HeadlessOutputStreamer(
+            job = job,
+            currentJob = jobs::get,
+            emitter = emitter,
+        ).start()
+        return ResponseEntity
+            .ok()
+            .contentType(MediaType.TEXT_EVENT_STREAM)
+            .header("Cache-Control", "no-cache")
+            .header("X-Accel-Buffering", "no")
+            .body(emitter)
     }
 
     @DeleteMapping("/{id}")
