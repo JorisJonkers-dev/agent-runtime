@@ -63,6 +63,14 @@ agent-gateway:
     trim-interval-seconds: 30
     lease-ttl-seconds: 120
     retention-seconds: 604800
+  codex:
+    # Must match the runner Pod's CODEX_HOME (the shared creds home); each
+    # interactive session runs under <home>/<session-homes-subdir>/<id> so
+    # its rollout id can be captured for `codex resume`.
+    home: ${CODEX_HOME:/home/agent/.codex}
+    session-homes-subdir: session-homes
+    capture-timeout-ms: 8000
+    capture-poll-ms: 100
 
 management:
   endpoints:

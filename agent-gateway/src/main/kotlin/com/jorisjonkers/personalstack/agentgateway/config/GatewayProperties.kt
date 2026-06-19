@@ -7,6 +7,8 @@ private const val DEFAULT_STAGED_INPUT_MAX_BYTES = 5L * 1024 * 1024
 private const val DEFAULT_TRANSCRIPT_SEGMENT_BYTES = 2L * 1024 * 1024
 private const val DEFAULT_TRANSCRIPT_CAP_BYTES = 64L * 1024 * 1024
 private const val DEFAULT_TRANSCRIPT_RETENTION_SECONDS = 7L * 24 * 60 * 60
+private const val DEFAULT_CODEX_CAPTURE_TIMEOUT_MS = 8_000L
+private const val DEFAULT_CODEX_CAPTURE_POLL_MS = 100L
 
 @ConfigurationProperties(prefix = "agent-gateway")
 data class GatewayProperties(
@@ -17,6 +19,7 @@ data class GatewayProperties(
     val runner: Runner = Runner(),
     val stagedInputs: StagedInputs = StagedInputs(),
     val transcripts: Transcripts = Transcripts(),
+    val codex: Codex = Codex(),
 ) {
     data class Tmux(
         val socketName: String,
@@ -66,5 +69,19 @@ data class GatewayProperties(
         val trimIntervalSeconds: Long = 30,
         val leaseTtlSeconds: Long = 120,
         val retentionSeconds: Long = DEFAULT_TRANSCRIPT_RETENTION_SECONDS,
+    )
+
+    // Codex has no `--session-id` to pre-set, so each interactive session
+    // gets its own isolated CODEX_HOME (auth.json / config.toml symlinked
+    // from [home]). That makes the rollout this session creates the only
+    // one in its sessions dir, so its UUID can be captured unambiguously
+    // for `codex resume <id>` on revival.
+    data class Codex(
+        // Shared creds home — must match the runner Pod's CODEX_HOME env.
+        val home: String = "/home/agent/.codex",
+        // Per-session homes live under <home>/<sessionHomesSubdir>/<stableSessionId>.
+        val sessionHomesSubdir: String = "session-homes",
+        val captureTimeoutMs: Long = DEFAULT_CODEX_CAPTURE_TIMEOUT_MS,
+        val capturePollMs: Long = DEFAULT_CODEX_CAPTURE_POLL_MS,
     )
 }

@@ -58,6 +58,7 @@ class AgentController(
                     req.stableSessionId,
                     req.epoch,
                     req.continuation?.toDomain(),
+                    req.resumeCliSessionId,
                 )
             ResponseEntity.status(HttpStatus.CREATED).body(toResponse(session))
         }

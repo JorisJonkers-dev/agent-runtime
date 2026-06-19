@@ -72,6 +72,7 @@ class AgentControllerTest {
                     fromSetupLabel = "Default runner",
                     toSetupLabel = "GPU runner",
                 ),
+                "native-old",
             )
         } returns sample
         mockMvc
@@ -90,7 +91,8 @@ class AgentControllerTest {
                             "previousEpoch":1,
                             "fromSetupLabel":"Default runner",
                             "toSetupLabel":"GPU runner"
-                          }
+                          },
+                          "resumeCliSessionId":"native-old"
                         }
                         """.trimIndent(),
                     ),

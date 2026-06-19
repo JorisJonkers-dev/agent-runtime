@@ -22,6 +22,7 @@ import org.springframework.stereotype.Component
 import java.io.IOException
 import java.nio.channels.FileChannel
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import java.time.Duration
@@ -152,6 +153,7 @@ class AgentSessionManager(
         stableSessionId: String? = null,
         epoch: Long? = null,
         continuation: AgentContinuation? = null,
+        resumeCliSessionId: String? = null,
     ): AgentSession {
         val startedAt = Instant.now()
         val telemetryKind = kind.toTelemetryKind()
@@ -190,7 +192,9 @@ class AgentSessionManager(
                     throw e
                 }
 
-            val (command, cliSessionId) = commandAndSessionIdFor(kind)
+            val codexHome = if (kind == AgentKind.CODEX) codexSessionHome(durableStableSessionId) else null
+            codexHome?.let(::prepareCodexHome)
+            val (command, commandCliSessionId) = commandAndSessionIdFor(kind, resumeCliSessionId, codexHome)
             try {
                 tmux.newSession(tmuxSession, command, cwd)
                 tmux.startPipeToFile(tmuxSession, logFile)
@@ -210,6 +214,13 @@ class AgentSessionManager(
                 transcriptStore.releaseLease(lease)
                 throw e
             }
+
+            // Codex's native id only exists once it writes the rollout at
+            // session start; capture it from the isolated home (fresh case).
+            // Claude and Codex-resume already know their id at build time.
+            val cliSessionId =
+                commandCliSessionId
+                    ?: codexHome?.takeIf { kind == AgentKind.CODEX }?.let(::captureCodexSessionId)
 
             val session =
                 AgentSession(
@@ -513,28 +524,102 @@ class AgentSessionManager(
     /**
      * Build the CLI command and return the native session id alongside it.
      *
-     * For Claude: a fresh UUID is generated and passed as `--session-id
+     * For Claude: on a fresh start a new UUID is passed as `--session-id
      * <uuid>` so the CLI process has a stable native identity without
-     * inheriting another conversation.
+     * inheriting another conversation. On revival ([resumeCliSessionId]
+     * set) the prior conversation is resumed via `--resume <id>` and that
+     * same id is returned, keeping the persisted cliSessionId stable across
+     * epochs — otherwise the terminal replays old bytes while the model
+     * starts blank.
      *
-     * For Codex: launch the interactive CLI directly. `codex resume --last`
-     * is intentionally not used here because it can attach a new gateway
-     * agent to a different saved Codex session on the shared credentials PVC.
+     * For Codex: Codex has no `--session-id` to pre-set, so each session
+     * runs under its own [codexHome] (auth/config symlinked in by
+     * [prepareCodexHome]). That isolation makes the rollout this session
+     * creates the only one in its sessions dir, so its id is captured after
+     * launch ([captureCodexSessionId]) and `codex resume <id>` resumes that
+     * exact rollout on revival — avoiding the `codex resume --last`
+     * cross-session risk on the shared credentials PVC. The id is unknown at
+     * command-build time, so the fresh case returns null here and the caller
+     * captures it post-launch.
      *
      * Shell has no session id.
      */
-    private fun commandAndSessionIdFor(kind: AgentKind): Pair<List<String>, String?> =
+    private fun commandAndSessionIdFor(
+        kind: AgentKind,
+        resumeCliSessionId: String? = null,
+        codexHome: Path? = null,
+    ): Pair<List<String>, String?> =
         when (kind) {
             AgentKind.CLAUDE -> {
-                val cliSessionId = UUID.randomUUID().toString()
-                val cmd =
-                    listOf(props.cli.claude) + props.cli.claudeArgs +
+                val cliSessionId = resumeCliSessionId ?: UUID.randomUUID().toString()
+                val sessionArgs =
+                    if (resumeCliSessionId != null) {
+                        listOf("--resume", resumeCliSessionId)
+                    } else {
                         listOf("--session-id", cliSessionId)
-                cmd to cliSessionId
+                    }
+                (listOf(props.cli.claude) + props.cli.claudeArgs + sessionArgs) to cliSessionId
             }
-            AgentKind.CODEX -> (listOf(props.cli.codex) + props.cli.codexArgs) to null
+            AgentKind.CODEX -> {
+                // `env CODEX_HOME=<home>` scopes this session's rollouts
+                // independently of the shared tmux server environment.
+                val envPrefix = codexHome?.let { listOf("env", "CODEX_HOME=$it") } ?: emptyList()
+                val resumeArgs = resumeCliSessionId?.let { listOf("resume", it) } ?: emptyList()
+                (envPrefix + listOf(props.cli.codex) + props.cli.codexArgs + resumeArgs) to resumeCliSessionId
+            }
             AgentKind.SHELL -> listOf("/bin/bash", "-l") to null
         }
+
+    private fun codexSessionHome(stableSessionId: String): Path =
+        Path(props.codex.home).resolve(props.codex.sessionHomesSubdir).resolve(stableSessionId)
+
+    // Isolate this session's Codex state: its own sessions/ dir, with the
+    // shared OAuth + config symlinked back to the credentials home so token
+    // refresh still writes through to the one canonical auth.json. Best
+    // effort — if it fails, Codex still launches and id capture just misses.
+    private fun prepareCodexHome(home: Path) {
+        runCatching {
+            Files.createDirectories(home.resolve("sessions"))
+            for (name in CODEX_SHARED_FILES) {
+                val src = Path(props.codex.home).resolve(name)
+                val link = home.resolve(name)
+                if (Files.exists(link, LinkOption.NOFOLLOW_LINKS) || !Files.exists(src)) continue
+                Files.createSymbolicLink(link, src)
+            }
+        }.onFailure { log.warn("could not prepare codex home {}: {}", home, it.message) }
+    }
+
+    // Poll the isolated sessions dir for the rollout Codex writes at session
+    // start and read its UUID from the filename. Isolation guarantees a single
+    // rollout, so there is no cross-session ambiguity; on timeout we return
+    // null and the session simply starts fresh on its next revival.
+    private fun captureCodexSessionId(codexHome: Path): String? {
+        val sessionsDir = codexHome.resolve("sessions")
+        val deadline = Instant.now().plusMillis(props.codex.captureTimeoutMs)
+        while (Instant.now().isBefore(deadline)) {
+            newestRolloutId(sessionsDir)?.let { return it }
+            try {
+                Thread.sleep(props.codex.capturePollMs)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+        }
+        log.warn("codex session id not captured within {}ms under {}", props.codex.captureTimeoutMs, sessionsDir)
+        return null
+    }
+
+    private fun newestRolloutId(sessionsDir: Path): String? {
+        if (!Files.isDirectory(sessionsDir)) return null
+        val newest =
+            Files.walk(sessionsDir).use { stream ->
+                stream
+                    .filter { Files.isRegularFile(it) && ROLLOUT_FILE.matches(it.fileName.toString()) }
+                    .max(compareBy { runCatching { Files.getLastModifiedTime(it).toMillis() }.getOrDefault(0L) })
+                    .orElse(null)
+            } ?: return null
+        return ROLLOUT_ID.find(newest.fileName.toString())?.groupValues?.get(1)
+    }
 
     private fun safeFileName(requestedName: String?): String {
         val raw = requestedName?.trim()?.takeIf { it.isNotBlank() } ?: DEFAULT_STAGED_INPUT_NAME
@@ -555,6 +640,10 @@ class AgentSessionManager(
         private const val MAX_STAGED_INPUT_NAME_CHARS = 80
         private const val SESSION_OBSERVATION_NAME = "agent.gateway.session.operation"
         private val SAFE_NAME_CHARS = Regex("[^A-Za-z0-9._-]+")
+        private val ROLLOUT_FILE = Regex("""^rollout-.*\.jsonl$""")
+        private val ROLLOUT_ID =
+            Regex("""([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$""")
+        private val CODEX_SHARED_FILES = listOf("auth.json", "config.toml")
         private val STAGED_INPUT_TIMESTAMP =
             DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS").withZone(ZoneOffset.UTC)
     }

@@ -8,6 +8,11 @@ data class SpawnAgentRequest(
     val stableSessionId: String? = null,
     val epoch: Long? = null,
     val continuation: ContinuationMetadata? = null,
+    // When set (session revival/continuation), resume the prior CLI
+    // conversation instead of minting a fresh native session — so the
+    // agent keeps its context across a shutdown, not just the terminal
+    // bytes the transcript replays.
+    val resumeCliSessionId: String? = null,
 )
 
 data class SendInputRequest(

@@ -68,6 +68,15 @@ class AgentSessionManagerTest {
             git = GatewayProperties.Git(deployKeyDir = "/x"),
             stagedInputs = stagedInputs,
             transcripts = transcripts,
+            // Isolate Codex homes under the temp dir and keep id-capture
+            // snappy so tests neither touch the real ~/.codex nor block on
+            // the production 8s capture window when no rollout is written.
+            codex =
+                GatewayProperties.Codex(
+                    home = tmp.resolve("codex-home").toString(),
+                    captureTimeoutMs = 150,
+                    capturePollMs = 10,
+                ),
         )
 
     @Test
@@ -181,6 +190,29 @@ class AgentSessionManagerTest {
     }
 
     @Test
+    fun `spawn resumes claude from the prior cliSessionId on revival`(
+        @TempDir tmp: Path,
+    ) {
+        val mgr = manager(tmp)
+        val prior = "11111111-2222-4333-8444-555555555555"
+        val s = mgr.spawn(AgentKind.CLAUDE, resumeCliSessionId = prior)
+        // The persisted id stays stable across epochs so the next revival
+        // resumes the same conversation.
+        assertThat(s.cliSessionId).isEqualTo(prior)
+        verify {
+            tmux.newSession(
+                s.tmuxSession,
+                match { cmd ->
+                    cmd.contains("--resume") &&
+                        cmd[cmd.indexOf("--resume") + 1] == prior &&
+                        !cmd.contains("--session-id")
+                },
+                tmp.resolve("workspace").toString(),
+            )
+        }
+    }
+
+    @Test
     fun `spawn never resumes codex last session`(
         @TempDir tmp: Path,
     ) {
@@ -207,6 +239,49 @@ class AgentSessionManagerTest {
     }
 
     @Test
+    fun `spawn captures the codex session id from the rollout it writes`(
+        @TempDir tmp: Path,
+    ) {
+        val mgr = manager(tmp)
+        val stable = "33333333-3333-4333-8333-333333333333"
+        val rolloutId = "019edf83-d3a0-7c73-8572-fec943c6091f"
+        // Simulate the rollout Codex writes at session start into its
+        // isolated home — capture reads the UUID straight off the filename.
+        val sessionsDir = tmp.resolve("codex-home/session-homes/$stable/sessions/2026/06/19")
+        Files.createDirectories(sessionsDir)
+        Files.writeString(
+            sessionsDir.resolve("rollout-2026-06-19T10-53-39-$rolloutId.jsonl"),
+            """{"type":"session_meta","payload":{"id":"$rolloutId"}}""",
+        )
+
+        val s = mgr.spawn(AgentKind.CODEX, stableSessionId = stable)
+
+        assertThat(s.cliSessionId).isEqualTo(rolloutId)
+    }
+
+    @Test
+    fun `spawn resumes codex from the prior session id in an isolated home`(
+        @TempDir tmp: Path,
+    ) {
+        val mgr = manager(tmp)
+        val prior = "019edf83-d3a0-7c73-8572-fec943c6091f"
+        val s = mgr.spawn(AgentKind.CODEX, resumeCliSessionId = prior)
+        assertThat(s.cliSessionId).isEqualTo(prior)
+        verify {
+            tmux.newSession(
+                s.tmuxSession,
+                match { cmd ->
+                    cmd.contains("env") &&
+                        cmd.any { it.startsWith("CODEX_HOME=") } &&
+                        cmd.contains("resume") &&
+                        cmd[cmd.indexOf("resume") + 1] == prior
+                },
+                tmp.resolve("workspace").toString(),
+            )
+        }
+    }
+
+    @Test
     fun `spawn launches codex with approval+sandbox bypass flag`(
         @TempDir tmp: Path,
     ) {
@@ -217,11 +292,20 @@ class AgentSessionManagerTest {
         verify {
             tmux.newSession(
                 s.tmuxSession,
-                listOf(
-                    "/usr/local/bin/codex",
-                    "--dangerously-bypass-approvals-and-sandbox",
-                    "--dangerously-bypass-hook-trust",
-                ),
+                // Codex launches under an isolated CODEX_HOME (env prefix), so
+                // the command is no longer an exact list — assert the bin +
+                // both bypass flags are present alongside the env prefix.
+                match { cmd ->
+                    cmd.containsAll(
+                        listOf(
+                            "/usr/local/bin/codex",
+                            "--dangerously-bypass-approvals-and-sandbox",
+                            "--dangerously-bypass-hook-trust",
+                        ),
+                    ) &&
+                        cmd.first() == "env" &&
+                        cmd.any { it.startsWith("CODEX_HOME=") }
+                },
                 tmp.resolve("workspace").toString(),
             )
         }
