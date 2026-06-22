@@ -11,11 +11,13 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ \
   && rm -rf /var/lib/apt/lists/*
 
-COPY package.json package-lock.json ./
+# Build context is the repo root (the publish workflow runs buildx with `.`),
+# so context-relative COPY paths carry the services/agents-login/ prefix.
+COPY services/agents-login/package.json services/agents-login/package-lock.json ./
 RUN npm ci
 
-COPY tsconfig.json ./
-COPY src ./src
+COPY services/agents-login/tsconfig.json ./
+COPY services/agents-login/src ./src
 RUN npm run build \
   && npm prune --omit=dev
 
@@ -43,8 +45,8 @@ RUN useradd --uid 1000 --create-home --home-dir /home/agent --shell /usr/sbin/no
 WORKDIR /app
 COPY --from=build --chown=1000:1000 /app/node_modules ./node_modules
 COPY --from=build --chown=1000:1000 /app/dist ./dist
-COPY --chown=1000:1000 package.json ./
-COPY --chown=1000:1000 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chown=1000:1000 services/agents-login/package.json ./
+COPY --chown=1000:1000 services/agents-login/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER 1000
