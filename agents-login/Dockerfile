@@ -1,6 +1,6 @@
-# Single image, two runtime modes (controller | worker) selected by
-# AGENTS_LOGIN_MODE. The worker mode drives the Claude Code and Codex CLIs over
-# a PTY, so both CLIs are baked into the image.
+# The credential-login worker: drives the Claude Code and Codex CLIs over a PTY
+# to capture OAuth credentials into Vault. Both CLIs are baked into the image.
+# The browser-facing half of the portal lives in agents-ui / agents-api.
 
 # ---- build stage ----------------------------------------------------------
 FROM node:22-bookworm-slim AS build
@@ -33,8 +33,7 @@ RUN npm install -g \
 
 ENV NODE_ENV=production \
     HOME=/home/agent \
-    CODEX_HOME=/home/agent/.codex \
-    AGENTS_LOGIN_MODE=controller
+    CODEX_HOME=/home/agent/.codex
 
 # Non-root user, UID 1000.
 RUN useradd --uid 1000 --create-home --home-dir /home/agent --shell /usr/sbin/nologin agent \
@@ -49,5 +48,5 @@ COPY --chown=1000:1000 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 USER 1000
-EXPOSE 8080 8081
+EXPOSE 8081
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

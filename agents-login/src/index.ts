@@ -1,17 +1,11 @@
-import { resolveMode } from './shared/config.js'
-import { runController } from './controller/index.js'
 import { runWorker } from './worker/index.js'
 
-async function main(): Promise<void> {
-  const mode = resolveMode()
-  if (mode === 'controller') {
-    await runController()
-  } else {
-    await runWorker()
-  }
-}
-
-main().catch((err) => {
+// The credential-login worker: the only process this image runs. It owns the
+// PTY that drives `claude /login` / `codex login --device`, captures the
+// credential files, and writes them to Vault under a Lease + CAS. The browser
+// UI and its auth live in agents-ui / agents-api, which proxy to this worker
+// over the internal token.
+runWorker().catch((err) => {
   process.stderr.write(`fatal: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}\n`)
   process.exit(1)
 })

@@ -1,45 +1,33 @@
 # agents-login
 
-Centralized, browser-driven credential-login portal for the agent runners.
+The credential-login **worker** for the agent runners.
 
 Agent runner pods authenticate the Claude Code CLI and the Codex CLI via OAuth
 (no API keys). Re-authentication previously required `kubectl exec` into a pod
-and copy/pasting a long OAuth URL out of a terminal that cannot copy text. This
-service replaces that: an operator opens the portal in a browser, clicks
-through the OAuth flow, and the captured credential files are written to Vault
-for fan-out to every runner.
+and copy/pasting a long OAuth URL out of a terminal that cannot copy text. The
+browser-driven replacement is the **Credentials** page in agents-ui (served at
+`agents.jorisjonkers.dev`), which calls **agents-api**, which proxies to this
+worker. The worker is the only privileged piece: it drives the CLI logins over
+a PTY and writes the captured credentials to Vault for fan-out to every runner.
 
-## Two modes, one image
-
-The same image runs in one of two modes, selected by `AGENTS_LOGIN_MODE`
-(or the first CLI argument):
-
-- **controller** — public-facing, behind the edge forward-auth/SSO. A thin UI
-  and proxy. Holds no Vault token and stores no credential files. Reads the
-  operator identity from forward-auth headers, enforces CSRF on every mutating
-  endpoint, sets `Cache-Control: no-store` on every response, and talks to the
-  worker over HTTP with a shared `INTERNAL_TOKEN`. Status is delivered by short
-  HTTP polling (no WebSocket — the OAuth flow idles for well over 100 s and an
-  upstream proxy kills idle WebSockets).
-- **worker** — private, single instance. Owns a PTY, spawns `claude /login`
-  and `codex login --device`, parses the authorize URL / device code out of the
-  PTY output, accepts the Claude post-approval redirect URL on stdin, captures
-  the credential files, and writes them to Vault under a Kubernetes Lease.
+This service is internal (ClusterIP only) and has no public surface — the UI,
+forward-auth gating, and CSRF all live in agents-ui / agents-api. agents-api
+authenticates to the worker with a shared `INTERNAL_TOKEN`.
 
 ## Flow
 
 ### Claude (`claude /login`)
 
 1. Worker spawns the CLI; the authorize URL is parsed from the PTY output.
-2. Controller shows the URL in a copyable element. Operator opens it, approves.
-3. Operator pastes the post-approval redirect URL back into the UI; the
-   controller forwards it to the worker, which writes it to the child's stdin.
+2. agents-ui shows the URL in a copyable element. The operator opens it, approves.
+3. The operator pastes the post-approval redirect URL back in the page; agents-api
+   forwards it to the worker, which writes it to the child's stdin.
 4. On the CLI success line, the worker captures the credentials and writes Vault.
 
 ### Codex (`codex login --device`)
 
 1. Worker spawns the CLI; the verification URL and device code are parsed out.
-2. Controller shows both. Operator enters the code in the browser (no paste-back).
+2. agents-ui shows both. The operator enters the code in the browser (no paste-back).
 3. On the CLI success line, the worker captures the credentials and writes Vault.
 
 ## Vault paths and fields
@@ -48,12 +36,14 @@ Written with KV v2 Compare-And-Set against `metadata.version`. The KV mount is
 configurable (`VAULT_KV_MOUNT`, default `secret`, matching the rest of the
 agents stack). All values are UTF-8 text.
 
-| Path (relative to the KV mount) | Fields                                                                            |
-| ------------------------------- | --------------------------------------------------------------------------------- |
-| `agents/claude-oauth`           | `.credentials.json`, `.claude.json`, `schema_version`, `updated_at`, `updated_by` |
-| `agents/codex-oauth`            | `auth.json`, `config.toml`, `schema_version`, `updated_at`, `updated_by`          |
+| Path (relative to the KV mount) | Fields                                                                          |
+| ------------------------------- | ------------------------------------------------------------------------------- |
+| `agents/claude-oauth`           | `credentials_json`, `claude_json`, `schema_version`, `updated_at`, `updated_by` |
+| `agents/codex-oauth`            | `auth_json`, `config_toml`, `schema_version`, `updated_at`, `updated_by`        |
 
-Captured from the live HOME:
+Field keys are underscored because `vault kv put` with leading-dot keys is
+awkward; the VaultStaticSecret transformation templates re-emit the exact CLI
+filenames into the projected Secrets. Captured from the live HOME:
 
 - `$HOME/.claude/.credentials.json`
 - `$HOME/.claude.json` — a **sibling** of `.claude/`, at `$HOME/.claude.json`,
@@ -63,39 +53,21 @@ Captured from the live HOME:
 
 The write critical section is guarded by a named Kubernetes Lease. On a CAS
 conflict the worker re-reads and retries with bounded backoff; on a persistent
-conflict it fails loudly (surfacing an error to the controller) rather than
+conflict it fails loudly (surfacing an error to agents-api) rather than
 blind-overwriting.
 
 ## Environment variables
 
-### Shared
-
-| Var                  | Default                          | Meaning                                                       |
-| -------------------- | -------------------------------- | ------------------------------------------------------------- |
-| `AGENTS_LOGIN_MODE`  | `controller` (image)             | `controller` or `worker`. Also accepted as the first CLI arg. |
-| `PORT`               | controller `8080`, worker `8081` | Listen port.                                                  |
-| `HOST`               | `0.0.0.0`                        | Listen address.                                               |
-| `INTERNAL_TOKEN`     | _(required)_                     | Shared token for controller→worker HTTP.                      |
-| `SESSION_TTL_MS`     | `900000`                         | Login-session timeout / CSRF-token TTL.                       |
-| `AGENTS_LOGIN_DEBUG` | unset                            | `1` enables debug log lines.                                  |
-
-### Controller
-
-| Var                         | Default                           | Meaning                                                                                                                                                              |
-| --------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WORKER_URL`                | `http://agents-login-worker:8081` | Worker base URL.                                                                                                                                                     |
-| `FORWARD_AUTH_USER_HEADER`  | `x-user-id`                       | Header carrying the authenticated operator. Matches the repo forward-auth middleware (`authResponseHeaders: X-User-Id`).                                             |
-| `FORWARD_AUTH_ROLES_HEADER` | `x-user-roles`                    | Header carrying comma-separated roles.                                                                                                                               |
-| `REQUIRED_PERMISSION`       | _(empty)_                         | Role/permission the operator must hold. Empty = any authenticated identity passes the controller's own gate (the edge forward-auth remains the primary enforcement). |
-
-### Worker
-
 | Var                     | Default                                               | Meaning                                 |
 | ----------------------- | ----------------------------------------------------- | --------------------------------------- |
+| `PORT`                  | `8081`                                                | Listen port.                            |
+| `HOST`                  | `0.0.0.0`                                             | Listen address.                         |
+| `INTERNAL_TOKEN`        | _(required)_                                          | Shared token agents-api presents.       |
+| `SESSION_TTL_MS`        | `900000`                                              | Login-session timeout.                  |
 | `HOME`                  | OS home                                               | Base for Claude credential capture.     |
 | `CODEX_HOME`            | `$HOME/.codex`                                        | Base for Codex credential capture.      |
 | `VAULT_ADDR`            | `http://vault.data-system.svc.cluster.local:8200`     | Vault address.                          |
-| `VAULT_K8S_ROLE`        | `agents-login`                                        | Vault Kubernetes-auth role.             |
+| `VAULT_K8S_ROLE`        | `agents-login-worker`                                 | Vault Kubernetes-auth role.             |
 | `VAULT_K8S_MOUNT`       | `kubernetes`                                          | Vault Kubernetes-auth mount.            |
 | `VAULT_KV_MOUNT`        | `secret`                                              | KV v2 mount.                            |
 | `VAULT_CLAUDE_PATH`     | `agents/claude-oauth`                                 | KV path for Claude.                     |
@@ -104,14 +76,14 @@ blind-overwriting.
 | `VAULT_CAS_MAX_RETRIES` | `5`                                                   | CAS retry budget before failing loudly. |
 | `LEASE_NAME`            | `agents-login-write`                                  | Coordination Lease name.                |
 | `LEASE_NAMESPACE`       | `agents-system`                                       | Coordination Lease namespace.           |
+| `AGENTS_LOGIN_DEBUG`    | unset                                                 | `1` enables debug log lines.            |
 
 ## Security posture
 
-- Controller holds no Vault token and no credential files.
-- CSRF token (double-submit, per-operator, short TTL) on every mutating route.
-- `Cache-Control: no-store` on every response.
+- The worker holds the only Vault-writer token in the flow; agents-api holds none.
 - Logs and HTTP responses are deep-redacted of token/credential-shaped material.
-- Worker rejects any request lacking the `INTERNAL_TOKEN`.
+- The worker rejects any request lacking the `INTERNAL_TOKEN`, and its
+  NetworkPolicy admits ingress only from the agents-api pods.
 
 ## Develop and test
 
@@ -134,9 +106,8 @@ driving the fake CLI scripts.
 
 `Dockerfile` builds a single Node 22 image that installs pinned versions of
 `@anthropic-ai/claude-code` and `@openai/codex` globally (keep them in lockstep
-with the agent-runner image), runs as a non-root user (UID 1000) with
-`HOME=/home/agent` and `CODEX_HOME=/home/agent/.codex`, and selects the mode
-from `AGENTS_LOGIN_MODE`.
+with the agent-runner image) and runs as a non-root user (UID 1000) with
+`HOME=/home/agent` and `CODEX_HOME=/home/agent/.codex`.
 
 > This service is intentionally **not** a pnpm-workspace member: it is fully
 > standalone with its own `package.json`, lockfile, and `Dockerfile`.

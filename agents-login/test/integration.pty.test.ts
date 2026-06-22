@@ -39,7 +39,11 @@ async function waitFor(fn: () => boolean, timeoutMs = 5000): Promise<void> {
 }
 
 describe('real-PTY integration with fake CLIs', () => {
-  it.runIf(true)(
+  // Local-only smoke test. It drives a REAL pseudo-terminal against fake CLI
+  // scripts, which is timing-sensitive under CI load; the deterministic FakePty
+  // tests in session.test.ts cover the same state machine, parsing, capture and
+  // Vault write. Skipped when CI is set so a PTY timing flake never gates merges.
+  it.runIf(!process.env.CI)(
     'captures Claude + Codex creds end to end via PTY',
     async () => {
       if (!spawner) {
@@ -84,15 +88,15 @@ describe('real-PTY integration with fake CLIs', () => {
       await waitFor(() => mgr.status(claude.id)!.phase === 'succeeded')
 
       const claudeSecret = vault.store.get('agents/claude-oauth')
-      expect(claudeSecret?.data['.credentials.json']).toContain('claude-secret-token')
-      expect(claudeSecret?.data['.claude.json']).toContain('oauthAccount')
+      expect(claudeSecret?.data['credentials_json']).toContain('claude-secret-token')
+      expect(claudeSecret?.data['claude_json']).toContain('oauthAccount')
 
       // Codex: device flow, no paste-back.
       const codex = mgr.start('codex', 'alice')
       await waitFor(() => mgr.status(codex.id)!.phase === 'succeeded')
       const codexSecret = vault.store.get('agents/codex-oauth')
-      expect(codexSecret?.data['auth.json']).toContain('codex-secret')
-      expect(codexSecret?.data['config.toml']).toContain('gpt-5')
+      expect(codexSecret?.data['auth_json']).toContain('codex-secret')
+      expect(codexSecret?.data['config_toml']).toContain('gpt-5')
 
       await vault.stop()
       rmSync(cli.binDir.replace(/\/bin$/, ''), { recursive: true, force: true })

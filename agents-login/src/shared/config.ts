@@ -1,8 +1,6 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-export type Mode = 'controller' | 'worker'
-
 function env(name: string, fallback?: string): string {
   const v = process.env[name]
   if (v === undefined || v === '') {
@@ -29,44 +27,6 @@ function intEnv(name: string, fallback: number): number {
     throw new Error(`env ${name} must be an integer, got ${v}`)
   }
   return n
-}
-
-export function resolveMode(argv: string[] = process.argv.slice(2)): Mode {
-  const fromArg = argv.find((a) => a === 'controller' || a === 'worker')
-  const raw = (process.env.AGENTS_LOGIN_MODE ?? fromArg ?? '').toLowerCase()
-  if (raw === 'controller' || raw === 'worker') {
-    return raw
-  }
-  throw new Error('mode not selected: set AGENTS_LOGIN_MODE=controller|worker or pass it as an argument')
-}
-
-export interface ControllerConfig {
-  port: number
-  host: string
-  workerUrl: string
-  internalToken: string
-  // forward-auth identity headers. Defaults match the repo's forward-auth
-  // middleware (authResponseHeaders: X-User-Id, X-User-Roles).
-  userHeader: string
-  rolesHeader: string
-  // Comma-separated role/permission required to use the portal. Empty = any
-  // authenticated user passes the controller's own gate (the edge forward-auth
-  // is still the primary enforcement point).
-  requiredPermission: string
-  sessionTtlMs: number
-}
-
-export function loadControllerConfig(): ControllerConfig {
-  return {
-    port: intEnv('PORT', 8080),
-    host: optEnv('HOST', '0.0.0.0'),
-    workerUrl: env('WORKER_URL', 'http://agents-login-worker:8081'),
-    internalToken: env('INTERNAL_TOKEN'),
-    userHeader: optEnv('FORWARD_AUTH_USER_HEADER', 'x-user-id'),
-    rolesHeader: optEnv('FORWARD_AUTH_ROLES_HEADER', 'x-user-roles'),
-    requiredPermission: optEnv('REQUIRED_PERMISSION', ''),
-    sessionTtlMs: intEnv('SESSION_TTL_MS', 15 * 60 * 1000),
-  }
 }
 
 export interface WorkerConfig {
