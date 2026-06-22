@@ -37,9 +37,10 @@ ENV NODE_ENV=production \
     HOME=/home/agent \
     CODEX_HOME=/home/agent/.codex
 
-# Non-root user, UID 1000.
-RUN useradd --uid 1000 --create-home --home-dir /home/agent --shell /usr/sbin/nologin agent \
-  && mkdir -p /home/agent/.claude /home/agent/.codex \
+# node:22 already ships a UID 1000 user (node), so `useradd --uid 1000` exits 4
+# on the clash. Reuse UID 1000 and just provision a writable HOME — the
+# container runs as the numeric UID 1000 with HOME=/home/agent.
+RUN mkdir -p /home/agent/.claude /home/agent/.codex \
   && chown -R 1000:1000 /home/agent
 
 WORKDIR /app
