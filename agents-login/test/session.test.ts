@@ -152,7 +152,7 @@ describe('LoginSession state machine', () => {
     expect(s.verificationUrl).toBe('https://auth.openai.com/device')
   })
 
-  it('rejects a redirect URL that is not absolute http(s)', async () => {
+  it('rejects an empty authorization code but accepts a non-URL code', async () => {
     const { deps: d } = deps(() => [
       { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' },
       { type: 'expectStdin', match: () => true, then: [] },
@@ -160,9 +160,9 @@ describe('LoginSession state machine', () => {
     const mgr = new SessionManager(d)
     const started = mgr.start('claude', 'alice')
     await tick()
-    const bad = mgr.submitRedirectUrl(started.id, 'not-a-url')
-    expect(bad.ok).toBe(false)
-    expect(bad.error).toMatch(/absolute http/)
+    expect(mgr.submitRedirectUrl(started.id, '   ').ok).toBe(false)
+    // setup-token returns a bare code, not a URL — it must be accepted.
+    expect(mgr.submitRedirectUrl(started.id, 'ABCD-1234-token').ok).toBe(true)
   })
 
   it('rejects redirect submission for the codex provider', async () => {

@@ -14,8 +14,11 @@ export function stripAnsi(input: string): string {
   return input.replace(ANSI_PATTERN, '').replace(OTHER_CONTROL, '')
 }
 
-// Claude Code prints an Anthropic OAuth authorize URL during `claude /login`.
-const CLAUDE_URL_PATTERN = /(https:\/\/(?:claude\.ai|console\.anthropic\.com)\/[^\s"'<>`]+)/i
+// `claude setup-token` prints an OAuth authorize URL. The host has moved across
+// claude.ai / claude.com / platform.claude.com / console.anthropic.com over CLI
+// versions (2.1.x emits claude.com), so accept all of them.
+const CLAUDE_URL_PATTERN =
+  /(https:\/\/(?:claude\.ai|claude\.com|platform\.claude\.com|console\.anthropic\.com)\/[^\s"'<>`]+)/i
 
 // Codex device login prints a verification URL and a user code.
 const CODEX_URL_PATTERN = /(https:\/\/[^\s"'<>`]*(?:openai\.com|chatgpt\.com)[^\s"'<>`]*)/i
@@ -48,7 +51,8 @@ export function parseCodex(buffer: string): CodexParse {
 }
 
 // The CLIs print an unambiguous success line once the login completes.
-const CLAUDE_SUCCESS = /(login\s*success|successfully\s*logged\s*in|you\s*are\s*now\s*logged\s*in|authenticated)/i
+const CLAUDE_SUCCESS =
+  /(login\s*success|successfully\s*logged\s*in|you\s*are\s*now\s*logged\s*in|authenticated|token\s*(?:saved|created|stored)|setup\s*complete)/i
 const CODEX_SUCCESS = /(login\s*success|successfully\s*logged\s*in|signed\s*in|authentication\s*complete)/i
 
 export function detectSuccess(provider: Provider, buffer: string): boolean {

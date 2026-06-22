@@ -17,6 +17,11 @@ describe('PTY output parsing', () => {
     expect(parseClaude(buf).authorizeUrl).toBe('https://console.anthropic.com/oauth/authorize?x=1')
   })
 
+  it('matches the claude.com host that setup-token emits', () => {
+    const buf = 'Use the url below to sign in\r\nhttps://claude.com/oauth/authorize?code=true&client_id=x&state=y\r\n'
+    expect(parseClaude(buf).authorizeUrl).toBe('https://claude.com/oauth/authorize?code=true&client_id=x&state=y')
+  })
+
   it('returns undefined when no Claude URL present', () => {
     expect(parseClaude('nothing here').authorizeUrl).toBeUndefined()
   })

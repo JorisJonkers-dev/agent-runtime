@@ -22,7 +22,12 @@ export interface SessionDeps {
 }
 
 function defaultCommand(provider: Provider): { file: string; args: string[] } {
-  return provider === 'claude' ? { file: 'claude', args: ['/login'] } : { file: 'codex', args: ['login', '--device'] }
+  // `claude /login` is an interactive REPL slash command ("not available in this
+  // environment"); `claude setup-token` is the headless OAuth flow that prints an
+  // authorize URL and takes a pasted code back, writing the standard credentials.
+  return provider === 'claude'
+    ? { file: 'claude', args: ['setup-token'] }
+    : { file: 'codex', args: ['login', '--device'] }
 }
 
 const MAX_BUFFER = 256 * 1024
@@ -41,6 +46,7 @@ export class LoginSession {
   private proc?: PtyProcess
   private timer?: NodeJS.Timeout
   private redirectSubmitted = false
+  private updatedBy = 'unknown'
 
   constructor(
     provider: Provider,
@@ -87,6 +93,7 @@ export class LoginSession {
 
   /** Spawn the CLI and begin parsing its PTY output. */
   start(updatedBy: string): void {
+    this.updatedBy = updatedBy
     const cmd = (this.deps.command ?? defaultCommand)(this.provider)
     const env = {
       ...process.env,
@@ -96,6 +103,10 @@ export class LoginSession {
     this.proc = this.deps.spawner(cmd.file, cmd.args, {
       cwd: this.deps.paths.home,
       env,
+      // Wide enough that the ~350-char authorize URL is emitted on one line;
+      // the default 80 cols wraps it and breaks URL extraction.
+      cols: 400,
+      rows: 50,
     })
     this.proc.onData((chunk) => this.onData(chunk, updatedBy))
     this.proc.onExit((info) => this.onExit(info.exitCode))
@@ -129,7 +140,7 @@ export class LoginSession {
         const { authorizeUrl } = parseClaude(this.buffer)
         if (authorizeUrl) {
           this.authorizeUrl = authorizeUrl
-          this.setPhase('awaiting_url', 'Open the authorize URL, approve, then paste the redirect URL.')
+          this.setPhase('awaiting_url', 'Open the authorize URL, approve, then paste the authorization code.')
         }
       }
     } else {
@@ -156,8 +167,16 @@ export class LoginSession {
     if (isTerminal(this.phase) || this.phase === 'finalizing') {
       return
     }
-    if (exitCode === 0 && detectSuccess(this.provider, this.buffer)) {
-      return // finalize already triggered
+    // A clean exit after the operator submitted the code (Claude setup-token) or
+    // after the device prompt was shown and approved (Codex) means the CLI wrote
+    // its credentials — capture them even if no success line was matched.
+    const completed =
+      detectSuccess(this.provider, this.buffer) ||
+      this.redirectSubmitted ||
+      (this.provider === 'codex' && this.phase === 'awaiting_device')
+    if (exitCode === 0 && completed) {
+      void this.finalize(this.updatedBy)
+      return
     }
     this.fail(`CLI exited with code ${exitCode} before login completed`)
   }
@@ -171,17 +190,19 @@ export class LoginSession {
       return { ok: false, error: `session is not awaiting a redirect URL (phase=${this.phase})` }
     }
     if (this.redirectSubmitted) {
-      return { ok: false, error: 'redirect URL already submitted' }
+      return { ok: false, error: 'authorization code already submitted' }
     }
     const trimmed = url.trim()
-    if (!/^https?:\/\//i.test(trimmed)) {
-      return { ok: false, error: 'redirect URL must be an absolute http(s) URL' }
+    // setup-token expects the authorization code copied from the approval page
+    // (not a URL); accept any non-empty value and let the CLI validate it.
+    if (trimmed.length === 0) {
+      return { ok: false, error: 'authorization code is required' }
     }
     this.redirectSubmitted = true
     this.proc?.write(trimmed + '\r')
     // Stay in awaiting_url so the success line emitted by the CLI after the
     // paste-back still drives finalize(); only finalize() flips to finalizing.
-    this.message = 'Submitted redirect URL; completing login…'
+    this.message = 'Submitted the authorization code; completing login…'
     this.touch()
     return { ok: true }
   }
