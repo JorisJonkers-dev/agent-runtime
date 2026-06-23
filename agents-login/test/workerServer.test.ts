@@ -98,4 +98,20 @@ describe('worker HTTP server', () => {
     expect(res.statusCode).toBe(200)
     expect(res.json().ok).toBe(true)
   })
+
+  it('cancels a body-less POST (the shape agents-api sends)', async () => {
+    // agents-api's RestClient issues cancel with no body and a content-type
+    // Fastify has no parser for; that used to 415 and brick the UI Cancel.
+    const headers = { 'x-internal-token': TOKEN }
+    const start = await app.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'claude' } })
+    const id = start.json().id
+    await new Promise((r) => setTimeout(r, 20))
+    const res = await app.inject({
+      method: 'POST',
+      url: `/sessions/${id}/cancel`,
+      headers: { ...headers, 'content-type': 'application/x-www-form-urlencoded' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().ok).toBe(true)
+  })
 })

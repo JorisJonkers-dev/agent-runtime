@@ -17,6 +17,15 @@ function isProvider(v: unknown): v is Provider {
 export function buildWorkerServer(deps: WorkerServerDeps): FastifyInstance {
   const app = Fastify({ logger: false })
 
+  // agents-api issues body-less POSTs (cancel) whose content-type Fastify has
+  // no parser for, which it would otherwise reject with 415 — bricking the UI
+  // Cancel button. Accept any unmatched content-type, treating a non-JSON body
+  // as empty; the typed routes that need a body are always sent application/json
+  // and keep using the built-in JSON parser.
+  app.addContentTypeParser('*', { parseAs: 'string' }, (_req, body, done) => {
+    done(null, body.length > 0 ? body : undefined)
+  })
+
   app.addHook('onSend', async (_req, reply, payload) => {
     reply.header('cache-control', 'no-store')
     return payload
