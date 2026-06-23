@@ -123,6 +123,32 @@ describe('LoginSession state machine', () => {
     expect(vault.store.get('agents/claude-oauth')?.data.updated_by).toBe('alice')
   })
 
+  it('captures the setup-token OAuth token from stdout when no credentials file is written', async () => {
+    // No .credentials.json is created — setup-token only prints the token.
+    const token = 'sk-ant-oat01-StdoutOnlyToken1234567890_-abcXYZ'
+    const { deps: d } = deps(() => [
+      { type: 'emit', data: 'Use the url below\r\nhttps://claude.com/cai/oauth/authorize?code=true\r\n' },
+      {
+        type: 'expectStdin',
+        match: () => true,
+        then: [
+          {
+            type: 'emit',
+            data: `Long-lived authentication token created successfully!\r\nYour OAuth token (valid for 1 year): ${token}\r\n`,
+          },
+          { type: 'exit', code: 0 },
+        ],
+      },
+    ])
+    const mgr = new SessionManager(d)
+    const started = mgr.start('claude', 'alice')
+    await tick()
+    expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('succeeded')
+    expect(vault.store.get('agents/claude-oauth')?.data['oauth_token']).toBe(token)
+    expect(vault.store.get('agents/claude-oauth')?.data['credentials_json']).toBeUndefined()
+  })
+
   it('drives the Codex device flow with no paste-back', async () => {
     writeFileSync(join(codexHome, 'auth.json'), '{"tokens":{}}')
     writeFileSync(join(codexHome, 'config.toml'), 'model="x"\n')

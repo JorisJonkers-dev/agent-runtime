@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest'
-import { parseClaude, parseCodex, detectSuccess, detectFailure, stripAnsi } from '../src/worker/parse.js'
+import {
+  parseClaude,
+  parseClaudeToken,
+  parseCodex,
+  detectSuccess,
+  detectFailure,
+  stripAnsi,
+} from '../src/worker/parse.js'
 
 describe('PTY output parsing', () => {
   it('strips ANSI escape and control sequences', () => {
@@ -70,6 +77,18 @@ describe('PTY output parsing', () => {
     expect(detectSuccess('claude', 'Login successful. You are now logged in.')).toBe(true)
     expect(detectSuccess('codex', 'Successfully logged in.')).toBe(true)
     expect(detectSuccess('claude', 'still working')).toBe(false)
+  })
+
+  it('parses the setup-token OAuth token from stdout, bounded by whitespace', () => {
+    const token = 'sk-ant-oat01-Dx3Q7rrCNsYQi3h2HLUKZK4-KDiCJ_XCKEcSYx0X3H-O0'
+    const buf =
+      `\x1b[32m✓\x1b[0m Long-lived authentication token created successfully!\r\n` +
+      `Your OAuth token (valid for 1 year): ${token}\r\nStore this token securely.`
+    expect(parseClaudeToken(buf)).toBe(token)
+  })
+
+  it('returns undefined when no token was printed', () => {
+    expect(parseClaudeToken('Visit https://claude.com/cai/oauth/authorize?code=true')).toBeUndefined()
   })
 
   it('detects failure lines', () => {

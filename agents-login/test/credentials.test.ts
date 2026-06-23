@@ -35,12 +35,27 @@ describe('credential capture', () => {
     expect(bundle.data.updated_at).toBe('2026-06-21T00:00:00.000Z')
   })
 
-  it('fails if the .claude.json sibling is missing (not inside .claude/)', async () => {
-    writeFileSync(join(home, '.claude', '.credentials.json'), '{}')
-    // deliberately write the wrong (inside-.claude) location to prove the
-    // capture reads the sibling and not the inner path
-    writeFileSync(join(home, '.claude', '.claude.json'), '{}')
-    await expect(captureClaude({ home, codexHome }, 'x', fixedNow)).rejects.toThrow()
+  it('captures the setup-token OAuth token from stdout when no files are written', async () => {
+    // `claude setup-token` prints the token and persists nothing; the token is
+    // the canonical credential.
+    const token = 'sk-ant-oat01-abcDEF123456_-789ghiJKLmnop'
+    const bundle = await captureClaude({ home, codexHome }, 'alice', fixedNow, token)
+    expect(bundle.data.oauth_token).toBe(token)
+    expect(bundle.data['credentials_json']).toBeUndefined()
+    expect(bundle.data['claude_json']).toBeUndefined()
+    expect(bundle.data.updated_by).toBe('alice')
+  })
+
+  it('captures the token alongside files when both are present', async () => {
+    writeFileSync(join(home, '.claude', '.credentials.json'), '{"accessToken":"a"}')
+    writeFileSync(join(home, '.claude.json'), '{"oauthAccount":{}}')
+    const bundle = await captureClaude({ home, codexHome }, 'alice', fixedNow, 'sk-ant-oat01-zzzzzzzzzzzzzzzzzzzz')
+    expect(bundle.data.oauth_token).toBe('sk-ant-oat01-zzzzzzzzzzzzzzzzzzzz')
+    expect(bundle.data['credentials_json']).toBe('{"accessToken":"a"}')
+  })
+
+  it('fails when neither a token nor a credentials file is available', async () => {
+    await expect(captureClaude({ home, codexHome }, 'x', fixedNow)).rejects.toThrow(/no Claude credential/)
   })
 
   it('captures Codex credentials from CODEX_HOME', async () => {

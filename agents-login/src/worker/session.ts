@@ -3,7 +3,7 @@ import type { Logger } from '../shared/log.js'
 import type { Provider, SessionPhase, SessionStatus } from '../shared/types.js'
 import { isTerminal } from '../shared/types.js'
 import { capture, type CredentialPaths } from './credentials.js'
-import { detectFailure, detectSuccess, parseClaude, parseCodex } from './parse.js'
+import { detectFailure, detectSuccess, parseClaude, parseClaudeToken, parseCodex } from './parse.js'
 import type { PtyProcess, PtySpawner } from './pty.js'
 import type { LeaseLock } from './lease.js'
 import { CasConflictError, type VaultClient } from './vaultClient.js'
@@ -220,7 +220,10 @@ export class LoginSession {
     }
     this.setPhase('finalizing', 'Capturing credentials…')
     try {
-      const bundle = await capture(this.provider, this.deps.paths, updatedBy, this.now)
+      // For Claude the canonical credential is the OAuth token setup-token
+      // prints to stdout, not a file; parse it from the accumulated buffer.
+      const claudeToken = this.provider === 'claude' ? parseClaudeToken(this.buffer) : undefined
+      const bundle = await capture(this.provider, this.deps.paths, updatedBy, this.now, claudeToken)
       const path = this.provider === 'claude' ? this.deps.vaultPaths.claude : this.deps.vaultPaths.codex
       await this.deps.lease.withLock(async () => {
         await this.deps.vault.writeCas(path, bundle.data)

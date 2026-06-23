@@ -18,33 +18,58 @@ async function readUtf8(path: string): Promise<string> {
   return readFile(path, 'utf8')
 }
 
+async function readUtf8OrUndefined(path: string): Promise<string | undefined> {
+  try {
+    return await readUtf8(path)
+  } catch {
+    return undefined
+  }
+}
+
 /**
- * Capture Claude credential files from the live HOME.
- *  - $HOME/.claude/.credentials.json
- *  - $HOME/.claude.json  (SIBLING of .claude/, NOT inside it)
+ * Capture the Claude credential from a completed `setup-token` run.
+ *
+ * `setup-token`'s product is a long-lived OAuth token printed to stdout (for
+ * CLAUDE_CODE_OAUTH_TOKEN); it does NOT write a credentials file. The token is
+ * therefore the canonical credential and is parsed from the PTY output by the
+ * caller. The interactive `claude login` flow instead leaves
+ * `$HOME/.claude/.credentials.json` and `$HOME/.claude.json` (a SIBLING of
+ * .claude/), so those are captured opportunistically when present. Capture
+ * fails only when neither a token nor a credentials file is available.
  */
 export async function captureClaude(
   paths: CredentialPaths,
   updatedBy: string,
   now: () => Date = () => new Date(),
+  oauthToken?: string,
 ): Promise<CredentialBundle> {
   const credsPath = join(paths.home, '.claude', '.credentials.json')
   const dotClaudePath = join(paths.home, '.claude.json')
-  const [credentials, dotClaude] = await Promise.all([readUtf8(credsPath), readUtf8(dotClaudePath)])
-  return {
-    // Vault KV v2 field keys are underscored (credentials_json, claude_json):
-    // `vault kv put` and the import/compare Job use these from the CLI, where
-    // leading-dot keys are awkward. The VaultStaticSecret transformation
-    // templates re-emit the dot-named filenames (.credentials.json,
-    // .claude.json) into the projected Secret for consumers.
-    data: {
-      credentials_json: credentials,
-      claude_json: dotClaude,
-      schema_version: SCHEMA_VERSION,
-      updated_at: now().toISOString(),
-      updated_by: updatedBy,
-    },
+  const [credentials, dotClaude] = await Promise.all([
+    readUtf8OrUndefined(credsPath),
+    readUtf8OrUndefined(dotClaudePath),
+  ])
+  if (!oauthToken && credentials === undefined) {
+    throw new Error('no Claude credential captured: setup-token printed no token and no .credentials.json was written')
   }
+  // Vault KV v2 field keys are underscored; the VaultStaticSecret templates
+  // re-emit the consumer-facing shape (CLAUDE_CODE_OAUTH_TOKEN env + the
+  // dot-named files) into the projected Secret.
+  const data: Record<string, string> = {
+    schema_version: SCHEMA_VERSION,
+    updated_at: now().toISOString(),
+    updated_by: updatedBy,
+  }
+  if (oauthToken) {
+    data.oauth_token = oauthToken
+  }
+  if (credentials !== undefined) {
+    data.credentials_json = credentials
+  }
+  if (dotClaude !== undefined) {
+    data.claude_json = dotClaude
+  }
+  return { data }
 }
 
 /**
@@ -76,6 +101,7 @@ export async function capture(
   paths: CredentialPaths,
   updatedBy: string,
   now?: () => Date,
+  claudeToken?: string,
 ): Promise<CredentialBundle> {
-  return provider === 'claude' ? captureClaude(paths, updatedBy, now) : captureCodex(paths, updatedBy, now)
+  return provider === 'claude' ? captureClaude(paths, updatedBy, now, claudeToken) : captureCodex(paths, updatedBy, now)
 }

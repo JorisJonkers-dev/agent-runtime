@@ -68,6 +68,17 @@ export function parseClaude(buffer: string): ClaudeParse {
   return { authorizeUrl: m?.[1]?.trim() }
 }
 
+// `claude setup-token`'s actual product is a long-lived OAuth token printed to
+// stdout ("Your OAuth token (valid for 1 year): sk-ant-oat01-…", meant for
+// CLAUDE_CODE_OAUTH_TOKEN). It is NOT persisted to a credentials file, so the
+// token must be captured from the PTY output. The PTY is 400 cols wide, so the
+// ~100-char token is emitted on one line and bounded by whitespace.
+const CLAUDE_TOKEN_PATTERN = /(sk-ant-oat[0-9]{2}-[A-Za-z0-9_-]{20,})/
+
+export function parseClaudeToken(buffer: string): string | undefined {
+  return stripAnsi(buffer).match(CLAUDE_TOKEN_PATTERN)?.[1]
+}
+
 export interface CodexParse {
   deviceCode?: string
   verificationUrl?: string
