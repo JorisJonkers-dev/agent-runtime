@@ -26,6 +26,35 @@ describe('PTY output parsing', () => {
     expect(parseClaude('nothing here').authorizeUrl).toBeUndefined()
   })
 
+  it('extracts the clean target from an OSC 8 hyperlink, not the fused display copy', () => {
+    // `claude setup-token` prints the authorize URL as an OSC 8 hyperlink
+    // (ESC ] 8 ; id ; URL BEL <visible copy> ESC ] 8 ; ; BEL). The framing
+    // bytes used to be dropped as stray control chars, fusing the real URL to
+    // the visible copy and corrupting the `state` param -> claude.com
+    // "Invalid request format".
+    const url =
+      'https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e' +
+      '&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback' +
+      '&scope=user%3Ainference&code_challenge=bqZmsNJOxO90O4o5X9obQ9vZkiqszKKv6MVdh2ATZ-E' +
+      '&code_challenge_method=S256&state=Sd4AzJmXYk19-_QoCD_XMnCfnMWTJ55N3ej4ZdGF3-c'
+    const raw = `Use the url below to sign in (c to copy)\r\n\x1b]8;id=sk1awg;${url}\x07${url}\x1b]8;;\x07\r\nPaste code here if prompted >`
+    expect(parseClaude(raw).authorizeUrl).toBe(url)
+  })
+
+  it('handles an ST-terminated OSC 8 hyperlink', () => {
+    const url = 'https://claude.com/cai/oauth/authorize?code=true&state=abc'
+    const raw = `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`
+    expect(parseClaude(raw).authorizeUrl).toBe(url)
+  })
+
+  it('extracts a Codex verification URL wrapped in an OSC 8 hyperlink', () => {
+    const url = 'https://auth.openai.com/device?code=WXYZ-1234'
+    const raw = `Enter the code: WXYZ-1234\r\n\x1b]8;id=dev;${url}\x07${url}\x1b]8;;\x07`
+    const parsed = parseCodex(raw)
+    expect(parsed.verificationUrl).toBe(url)
+    expect(parsed.deviceCode).toBe('WXYZ-1234')
+  })
+
   it('extracts the Codex device code and verification URL', () => {
     const buf = 'Open https://auth.openai.com/device\r\nEnter the code: WXYZ-1234\r\n'
     const parsed = parseCodex(buf)

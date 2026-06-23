@@ -6,12 +6,37 @@ import type { Provider } from '../shared/types.js'
 // CSI escape sequences: ESC [ ... final-byte.
 // eslint-disable-next-line no-control-regex
 const ANSI_PATTERN = /\x1b\[[0-9;?]*[ -/]*[@-~]/g
+// OSC sequences: ESC ] ... terminated by BEL (\x07) or ST (ESC \). The CLIs
+// wrap the authorize/verification URL in an OSC 8 hyperlink, so the wrapper
+// must be removed wholesale before the plain-text fallback scan — otherwise its
+// framing bytes are dropped as stray control chars (below) and fuse the real
+// URL onto its display-text copy with no separator.
+// eslint-disable-next-line no-control-regex
+const OSC_PATTERN = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g
+// OSC 8 hyperlink: ESC ] 8 ; params ; URI ST. Capture group 1 is the link
+// target — the canonical, untruncated URL the CLI is pointing at.
+// eslint-disable-next-line no-control-regex
+const OSC8_HYPERLINK = /\x1b\]8;[^;]*;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
 // Remaining C0 control bytes except CR/LF/TAB, which carry layout meaning.
 // eslint-disable-next-line no-control-regex
 const OTHER_CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g
 
 export function stripAnsi(input: string): string {
-  return input.replace(ANSI_PATTERN, '').replace(OTHER_CONTROL, '')
+  return input.replace(OSC_PATTERN, '').replace(ANSI_PATTERN, '').replace(OTHER_CONTROL, '')
+}
+
+// OSC 8 hyperlink targets, in emission order, from the raw (pre-strip) buffer.
+function oscHyperlinkTargets(raw: string): string[] {
+  const targets: string[] = []
+  OSC8_HYPERLINK.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = OSC8_HYPERLINK.exec(raw)) !== null) {
+    const uri = m[1]?.trim()
+    if (uri) {
+      targets.push(uri)
+    }
+  }
+  return targets
 }
 
 // `claude setup-token` prints an OAuth authorize URL. The host has moved across
@@ -30,6 +55,14 @@ export interface ClaudeParse {
 }
 
 export function parseClaude(buffer: string): ClaudeParse {
+  // Prefer the OSC 8 hyperlink target: it is the full URL even when the visible
+  // copy is width-truncated, and it cannot be fused to adjacent text.
+  for (const uri of oscHyperlinkTargets(buffer)) {
+    const matched = uri.match(CLAUDE_URL_PATTERN)?.[1]?.trim()
+    if (matched) {
+      return { authorizeUrl: matched }
+    }
+  }
   const clean = stripAnsi(buffer)
   const m = clean.match(CLAUDE_URL_PATTERN)
   return { authorizeUrl: m?.[1]?.trim() }
@@ -41,13 +74,20 @@ export interface CodexParse {
 }
 
 export function parseCodex(buffer: string): CodexParse {
-  const clean = stripAnsi(buffer)
-  const url = clean.match(CODEX_URL_PATTERN)
-  const code = clean.match(DEVICE_CODE_PATTERN)
-  return {
-    verificationUrl: url?.[1]?.trim(),
-    deviceCode: code?.[1]?.trim(),
+  let verificationUrl: string | undefined
+  for (const uri of oscHyperlinkTargets(buffer)) {
+    const matched = uri.match(CODEX_URL_PATTERN)?.[1]?.trim()
+    if (matched) {
+      verificationUrl = matched
+      break
+    }
   }
+  const clean = stripAnsi(buffer)
+  if (!verificationUrl) {
+    verificationUrl = clean.match(CODEX_URL_PATTERN)?.[1]?.trim()
+  }
+  const code = clean.match(DEVICE_CODE_PATTERN)
+  return { verificationUrl, deviceCode: code?.[1]?.trim() }
 }
 
 // The CLIs print an unambiguous success line once the login completes.
