@@ -22,12 +22,27 @@ function manager() {
 }
 
 const TOKEN = 'internal-secret'
+const VAULT_PATHS = { claude: 'agents/claude-oauth', codex: 'agents/codex-oauth' }
+
+function fakeVault(
+  overrides: Record<string, { exists: boolean; version: number; updatedAt?: string; updatedBy?: string }> = {},
+) {
+  return {
+    readStatus: async (path: string) => overrides[path] ?? { exists: false, version: 0 },
+  }
+}
 
 describe('worker HTTP server', () => {
   let app: ReturnType<typeof buildWorkerServer>
 
   beforeEach(() => {
-    app = buildWorkerServer({ sessions: manager(), internalToken: TOKEN, logger: createLogger() })
+    app = buildWorkerServer({
+      sessions: manager(),
+      internalToken: TOKEN,
+      logger: createLogger(),
+      vault: fakeVault(),
+      vaultPaths: VAULT_PATHS,
+    })
   })
 
   it('serves health without auth', async () => {
@@ -71,12 +86,23 @@ describe('worker HTTP server', () => {
     expect(res.statusCode).toBe(404)
   })
 
-  it('409s when a session is already in progress', async () => {
+  it('starts Claude and Codex concurrently', async () => {
     const headers = { 'x-internal-token': TOKEN }
-    await app.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'claude' } })
+    const claude = await app.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'claude' } })
     await new Promise((r) => setTimeout(r, 20))
-    const res = await app.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'codex' } })
-    expect(res.statusCode).toBe(409)
+    const codex = await app.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'codex' } })
+    expect(claude.statusCode).toBe(201)
+    expect(codex.statusCode).toBe(201)
+    expect(codex.json().id).not.toBe(claude.json().id)
+  })
+
+  it('re-attaches a same-provider start to the existing session', async () => {
+    const headers = { 'x-internal-token': TOKEN }
+    const first = await app.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'claude' } })
+    await new Promise((r) => setTimeout(r, 20))
+    const again = await app.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'claude' } })
+    expect(again.statusCode).toBe(201)
+    expect(again.json().id).toBe(first.json().id)
   })
 
   it('400s a redirect submit without a url', async () => {
@@ -97,6 +123,34 @@ describe('worker HTTP server', () => {
     const res = await app.inject({ method: 'POST', url: `/sessions/${id}/cancel`, headers, payload: {} })
     expect(res.statusCode).toBe(200)
     expect(res.json().ok).toBe(true)
+  })
+
+  it('reports per-provider stored-credential status (no secrets)', async () => {
+    const sessions = manager()
+    const local = buildWorkerServer({
+      sessions,
+      internalToken: TOKEN,
+      logger: createLogger(),
+      vault: fakeVault({
+        'agents/claude-oauth': { exists: true, version: 3, updatedAt: '2026-06-23T10:00:00Z', updatedBy: 'ExtraToast' },
+      }),
+      vaultPaths: VAULT_PATHS,
+    })
+    const res = await local.inject({ method: 'GET', url: '/status', headers: { 'x-internal-token': TOKEN } })
+    expect(res.statusCode).toBe(200)
+    const body = res.json()
+    expect(body.claude).toEqual({
+      exists: true,
+      version: 3,
+      updatedAt: '2026-06-23T10:00:00Z',
+      updatedBy: 'ExtraToast',
+    })
+    expect(body.codex).toEqual({ exists: false, version: 0 })
+  })
+
+  it('requires the internal token for /status', async () => {
+    const res = await app.inject({ method: 'GET', url: '/status' })
+    expect(res.statusCode).toBe(401)
   })
 
   it('returns the authorize URL with its long state/code_challenge intact', async () => {
@@ -122,7 +176,13 @@ describe('worker HTTP server', () => {
       logger: createLogger(),
       ttlMs: 60_000,
     })
-    const local = buildWorkerServer({ sessions, internalToken: TOKEN, logger: createLogger() })
+    const local = buildWorkerServer({
+      sessions,
+      internalToken: TOKEN,
+      logger: createLogger(),
+      vault: fakeVault(),
+      vaultPaths: VAULT_PATHS,
+    })
     const headers = { 'x-internal-token': TOKEN }
     const start = await local.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'claude' } })
     const id = start.json().id

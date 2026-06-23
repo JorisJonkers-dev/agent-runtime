@@ -27,6 +27,19 @@ interface MetadataResponse {
   data: { current_version: number }
 }
 
+interface DataResponse {
+  data: { data: Record<string, string>; metadata: { version: number } }
+}
+
+/** Non-secret summary of a stored credential, for the UI's "check" panel. */
+export interface CredentialStatus {
+  exists: boolean
+  version: number
+  updatedAt?: string
+  updatedBy?: string
+  schemaVersion?: string
+}
+
 export class VaultClient {
   private token?: string
 
@@ -74,6 +87,31 @@ export class VaultClient {
     }
     const body = (await res.json()) as MetadataResponse
     return body.data?.current_version ?? 0
+  }
+
+  /**
+   * Read the non-secret bookkeeping fields (version + who/when last wrote) for
+   * the UI's credential-status check. The credential blobs in `data` are never
+   * returned. Reports `exists: false` when the path has no live secret.
+   */
+  async readStatus(path: string): Promise<CredentialStatus> {
+    const url = `${this.opts.addr}/v1/${this.opts.kvMount}/data/${path}`
+    const res = await this.fetchImpl(url, { headers: this.headers() })
+    if (res.status === 404) {
+      return { exists: false, version: 0 }
+    }
+    if (!res.ok) {
+      throw new Error(`vault data read failed: ${res.status} ${await safeText(res)}`)
+    }
+    const body = (await res.json()) as DataResponse
+    const data = body.data?.data ?? {}
+    return {
+      exists: true,
+      version: body.data?.metadata?.version ?? 0,
+      updatedAt: data.updated_at,
+      updatedBy: data.updated_by,
+      schemaVersion: data.schema_version,
+    }
   }
 
   private async putOnce(path: string, data: Record<string, string>, casVersion: number): Promise<boolean> {

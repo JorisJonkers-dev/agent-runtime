@@ -39,7 +39,13 @@ export async function runWorker(): Promise<void> {
     ttlMs: cfg.sessionTtlMs,
   })
 
-  const app = buildWorkerServer({ sessions, internalToken: cfg.internalToken, logger })
+  const app = buildWorkerServer({
+    sessions,
+    internalToken: cfg.internalToken,
+    logger,
+    vault,
+    vaultPaths: { claude: cfg.vaultClaudePath, codex: cfg.vaultCodexPath },
+  })
   await app.listen({ host: cfg.host, port: cfg.port })
   logger.info('worker listening', { host: cfg.host, port: cfg.port })
 }

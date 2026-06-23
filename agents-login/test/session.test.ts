@@ -217,12 +217,21 @@ describe('LoginSession state machine', () => {
     expect(mgr.status(started.id)!.phase).toBe('cancelled')
   })
 
-  it('refuses a second concurrent session for a different provider', async () => {
-    const { deps: d } = deps(() => [{ type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' }])
+  it('runs Claude and Codex sessions concurrently', async () => {
+    const { deps: d, instances } = deps(() => [
+      { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' },
+    ])
     const mgr = new SessionManager(d)
-    mgr.start('claude', 'alice')
+    const claude = mgr.start('claude', 'alice')
     await tick()
-    expect(() => mgr.start('codex', 'alice')).toThrow(/claude login session is already in progress/)
+    // A different provider starts its own independent session, not a 409.
+    const codex = mgr.start('codex', 'alice')
+    expect(codex.id).not.toBe(claude.id)
+    expect(codex.provider).toBe('codex')
+    expect(instances.length).toBe(2)
+    // Both remain individually addressable by id.
+    expect(mgr.status(claude.id)?.provider).toBe('claude')
+    expect(mgr.status(codex.id)?.provider).toBe('codex')
   })
 
   it('re-attaches to an in-progress session of the same provider instead of refusing', async () => {

@@ -124,6 +124,50 @@ describe('VaultClient', () => {
     await expect(c.currentVersion('p')).rejects.toThrow(/metadata read failed/)
   })
 
+  it('reads non-secret status fields and never returns the secret blob', async () => {
+    vault = new FakeVault()
+    await vault.start()
+    const stubFetch = (async (input: string | URL | Request) => {
+      const url = input.toString()
+      if (url.endsWith('/login')) {
+        return new Response(JSON.stringify({ auth: { client_token: 't', lease_duration: 1 } }), { status: 200 })
+      }
+      if (url.includes('/data/agents/claude-oauth')) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              data: {
+                credentials_json: 'TOP-SECRET-BLOB',
+                updated_at: '2026-06-23T10:00:00Z',
+                updated_by: 'ExtraToast',
+                schema_version: '1',
+              },
+              metadata: { version: 4 },
+            },
+          }),
+          { status: 200 },
+        )
+      }
+      return new Response('{}', { status: 404 })
+    }) as unknown as typeof fetch
+    const c = new VaultClient(
+      { addr: vault.url, k8sRole: 'r', k8sMount: 'kubernetes', kvMount: 'secret', saTokenPath: '/x', maxCasRetries: 2 },
+      stubFetch,
+      async () => 'jwt',
+    )
+    await c.login()
+    const st = await c.readStatus('agents/claude-oauth')
+    expect(st).toEqual({
+      exists: true,
+      version: 4,
+      updatedAt: '2026-06-23T10:00:00Z',
+      updatedBy: 'ExtraToast',
+      schemaVersion: '1',
+    })
+    expect(JSON.stringify(st)).not.toContain('TOP-SECRET-BLOB')
+    expect(await c.readStatus('agents/missing')).toEqual({ exists: false, version: 0 })
+  })
+
   it('throws when login returns no client_token', async () => {
     vault = new FakeVault()
     await vault.start()

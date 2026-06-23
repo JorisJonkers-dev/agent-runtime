@@ -3,11 +3,15 @@ import type { Logger } from '../shared/log.js'
 import type { Provider, SessionStatus } from '../shared/types.js'
 import { redactString } from '../shared/redact.js'
 import type { SessionManager } from './session.js'
+import type { VaultClient } from './vaultClient.js'
 
 export interface WorkerServerDeps {
   sessions: SessionManager
   internalToken: string
   logger: Logger
+  // The stored-credential check reads non-secret bookkeeping from these paths.
+  vault: Pick<VaultClient, 'readStatus'>
+  vaultPaths: { claude: string; codex: string }
 }
 
 function isProvider(v: unknown): v is Provider {
@@ -58,6 +62,17 @@ export function buildWorkerServer(deps: WorkerServerDeps): FastifyInstance {
   })
 
   app.get('/healthz', async () => ({ ok: true }))
+
+  // The credential-status check: what is currently stored in Vault for each
+  // provider (version + when/who last refreshed), so the UI can confirm a login
+  // landed without exposing any secret material.
+  app.get('/status', async () => {
+    const [claude, codex] = await Promise.all([
+      deps.vault.readStatus(deps.vaultPaths.claude),
+      deps.vault.readStatus(deps.vaultPaths.codex),
+    ])
+    return { claude, codex }
+  })
 
   app.post('/sessions', async (req, reply) => {
     const body = (req.body ?? {}) as { provider?: unknown; updatedBy?: unknown }

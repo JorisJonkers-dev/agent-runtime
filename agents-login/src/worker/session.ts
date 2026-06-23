@@ -257,48 +257,56 @@ export class LoginSession {
   }
 }
 
-/** Holds the single active session for the worker (single-instance by design). */
+/**
+ * Holds at most one active session per provider. Claude and Codex run their
+ * CLIs against separate HOME subtrees (`.claude` vs `CODEX_HOME`) and the Vault
+ * write is serialized by the Lease, so the two providers can log in
+ * concurrently; a second start for a provider whose session is still live
+ * re-attaches to it rather than spawning a duplicate.
+ */
 export class SessionManager {
-  private current?: LoginSession
+  private readonly byProvider = new Map<Provider, LoginSession>()
 
   constructor(private readonly deps: SessionDeps) {}
 
   start(provider: Provider, updatedBy: string): SessionStatus {
-    if (this.current && !isTerminal(this.current.status().phase)) {
-      // Re-attach to an in-progress session for the same provider so the UI
-      // resumes the existing login (its authorize URL / code prompt) instead of
-      // being blocked; the single slot still rejects a cross-provider switch.
-      if (this.current.provider === provider) {
-        return this.current.status()
-      }
-      throw new Error(`a ${this.current.provider} login session is already in progress`)
+    const existing = this.byProvider.get(provider)
+    if (existing && !isTerminal(existing.status().phase)) {
+      // Resume the in-progress login (its authorize URL / code prompt) instead
+      // of starting a duplicate.
+      return existing.status()
     }
     const session = new LoginSession(provider, this.deps)
-    this.current = session
+    this.byProvider.set(provider, session)
     session.start(updatedBy)
     return session.status()
   }
 
-  status(id?: string): SessionStatus | undefined {
-    if (!this.current) {
-      return undefined
+  private find(id: string): LoginSession | undefined {
+    for (const session of this.byProvider.values()) {
+      if (session.id === id) {
+        return session
+      }
     }
-    if (id && this.current.id !== id) {
-      return undefined
-    }
-    return this.current.status()
+    return undefined
+  }
+
+  status(id: string): SessionStatus | undefined {
+    return this.find(id)?.status()
   }
 
   submitRedirectUrl(id: string, url: string): { ok: boolean; error?: string } {
-    if (!this.current || this.current.id !== id) {
+    const session = this.find(id)
+    if (!session) {
       return { ok: false, error: 'no matching session' }
     }
-    return this.current.submitRedirectUrl(url)
+    return session.submitRedirectUrl(url)
   }
 
   cancel(id: string): { ok: boolean } {
-    if (this.current && this.current.id === id) {
-      this.current.cancel()
+    const session = this.find(id)
+    if (session) {
+      session.cancel()
       return { ok: true }
     }
     return { ok: false }
