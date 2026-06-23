@@ -84,14 +84,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && docker compose version >/dev/null \
     && rm -rf /var/lib/apt/lists/*
 
-# Claude Code + Codex CLIs. Both ship via npm; pin to the versions
-# the auth flow was tested against and bump deliberately. The CLIs
-# read OAuth tokens from $HOME/.claude/.credentials.json and
-# $CODEX_HOME/auth.json — both mounted as PVCs by every Pod that
-# uses this image.
+# Claude Code + Codex CLIs. Both ship via npm; pin to the versions the
+# auth flow was tested against and bump deliberately — kept in lockstep
+# with the agents-login worker image so the captured credential schema
+# matches what the runners consume.
+ARG CLAUDE_CODE_VERSION=2.1.186
+ARG CODEX_VERSION=0.141.0
 RUN npm install -g \
-      @anthropic-ai/claude-code \
-      @openai/codex \
+      @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
+      @openai/codex@${CODEX_VERSION} \
     && npm cache clean --force
 
 # Playwright MCP (browser automation) + a matching chromium. The MCP
