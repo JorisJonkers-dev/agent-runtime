@@ -99,6 +99,40 @@ describe('worker HTTP server', () => {
     expect(res.json().ok).toBe(true)
   })
 
+  it('returns the authorize URL with its long state/code_challenge intact', async () => {
+    // The generic token redactor masks 40+ char base64url runs; applied to the
+    // status it used to scrub the OAuth `state` + PKCE `code_challenge` out of
+    // the authorize URL, leaving the operator a literal «redacted» they cannot
+    // open. The URL fields must pass through verbatim.
+    const url =
+      'https://claude.ai/oauth/authorize?response_type=code&code_challenge=' +
+      'a'.repeat(43) +
+      '&code_challenge_method=S256&state=' +
+      'b'.repeat(43)
+    const { spawner } = fakeSpawner(() => [
+      { type: 'emit', data: `Visit ${url}\r\n` },
+      { type: 'expectStdin', match: () => true, then: [] },
+    ])
+    const sessions = new SessionManager({
+      spawner,
+      vault: {} as never,
+      lease: {} as never,
+      paths: { home: '/tmp', codexHome: '/tmp/.codex' },
+      vaultPaths: { claude: 'agents/claude-oauth', codex: 'agents/codex-oauth' },
+      logger: createLogger(),
+      ttlMs: 60_000,
+    })
+    const local = buildWorkerServer({ sessions, internalToken: TOKEN, logger: createLogger() })
+    const headers = { 'x-internal-token': TOKEN }
+    const start = await local.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'claude' } })
+    const id = start.json().id
+    await new Promise((r) => setTimeout(r, 20))
+    const res = await local.inject({ method: 'GET', url: `/sessions/${id}`, headers })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().authorizeUrl).toBe(url)
+    expect(res.json().authorizeUrl).not.toContain('redacted')
+  })
+
   it('cancels a body-less POST (the shape agents-api sends)', async () => {
     // agents-api's RestClient issues cancel with no body and a content-type
     // Fastify has no parser for; that used to 415 and brick the UI Cancel.

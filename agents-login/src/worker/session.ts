@@ -265,7 +265,13 @@ export class SessionManager {
 
   start(provider: Provider, updatedBy: string): SessionStatus {
     if (this.current && !isTerminal(this.current.status().phase)) {
-      throw new Error('a login session is already in progress')
+      // Re-attach to an in-progress session for the same provider so the UI
+      // resumes the existing login (its authorize URL / code prompt) instead of
+      // being blocked; the single slot still rejects a cross-provider switch.
+      if (this.current.provider === provider) {
+        return this.current.status()
+      }
+      throw new Error(`a ${this.current.provider} login session is already in progress`)
     }
     const session = new LoginSession(provider, this.deps)
     this.current = session

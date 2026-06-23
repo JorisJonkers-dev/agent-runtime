@@ -1,7 +1,7 @@
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { Logger } from '../shared/log.js'
-import type { Provider } from '../shared/types.js'
-import { redactValue } from '../shared/redact.js'
+import type { Provider, SessionStatus } from '../shared/types.js'
+import { redactString } from '../shared/redact.js'
 import type { SessionManager } from './session.js'
 
 export interface WorkerServerDeps {
@@ -12,6 +12,20 @@ export interface WorkerServerDeps {
 
 function isProvider(v: unknown): v is Provider {
   return v === 'claude' || v === 'codex'
+}
+
+// The status payload never carries a captured credential — those go straight to
+// Vault. authorizeUrl / verificationUrl / deviceCode are exactly what the UI
+// must show the operator, and the OAuth `state` + PKCE `code_challenge` are long
+// base64url strings the generic token redactor would otherwise mask, breaking
+// the URL the operator has to open. Only the free-text message/error fields
+// (which can echo PTY output) are scrubbed.
+function safeStatus(status: SessionStatus): SessionStatus {
+  return {
+    ...status,
+    message: status.message === undefined ? status.message : redactString(status.message),
+    error: status.error === undefined ? status.error : redactString(status.error),
+  }
 }
 
 export function buildWorkerServer(deps: WorkerServerDeps): FastifyInstance {
@@ -53,7 +67,7 @@ export function buildWorkerServer(deps: WorkerServerDeps): FastifyInstance {
     const updatedBy = typeof body.updatedBy === 'string' && body.updatedBy ? body.updatedBy : 'unknown'
     try {
       const status = deps.sessions.start(body.provider, updatedBy)
-      return reply.code(201).send(redactValue(status))
+      return reply.code(201).send(safeStatus(status))
     } catch (err) {
       return reply.code(409).send({ error: err instanceof Error ? err.message : 'cannot start session' })
     }
@@ -65,7 +79,7 @@ export function buildWorkerServer(deps: WorkerServerDeps): FastifyInstance {
     if (!status) {
       return reply.code(404).send({ error: 'no matching session' })
     }
-    return reply.send(redactValue(status))
+    return reply.send(safeStatus(status))
   })
 
   app.post('/sessions/:id/redirect', async (req, reply) => {

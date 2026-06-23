@@ -217,12 +217,29 @@ describe('LoginSession state machine', () => {
     expect(mgr.status(started.id)!.phase).toBe('cancelled')
   })
 
-  it('refuses a second concurrent session', async () => {
+  it('refuses a second concurrent session for a different provider', async () => {
     const { deps: d } = deps(() => [{ type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' }])
     const mgr = new SessionManager(d)
     mgr.start('claude', 'alice')
     await tick()
-    expect(() => mgr.start('codex', 'alice')).toThrow(/already in progress/)
+    expect(() => mgr.start('codex', 'alice')).toThrow(/claude login session is already in progress/)
+  })
+
+  it('re-attaches to an in-progress session of the same provider instead of refusing', async () => {
+    const { deps: d, instances } = deps(() => [
+      { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' },
+      { type: 'expectStdin', match: () => true, then: [] },
+    ])
+    const mgr = new SessionManager(d)
+    const first = mgr.start('claude', 'alice')
+    await tick()
+    // Clicking "Start login" again must resume the existing flow, not 409.
+    const again = mgr.start('claude', 'alice')
+    expect(again.id).toBe(first.id)
+    expect(again.phase).toBe('awaiting_url')
+    expect(again.authorizeUrl).toContain('claude.ai/oauth/authorize')
+    // No second CLI child is spawned.
+    expect(instances.length).toBe(1)
   })
 
   it('surfaces a persistent Vault CAS conflict as a failed session', async () => {
