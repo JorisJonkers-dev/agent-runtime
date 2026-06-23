@@ -26,7 +26,7 @@ FROM node:22-bookworm-slim AS runtime
 
 # Pinned CLI versions. Keep these in lockstep with the agent-runner image so the
 # captured credential schema always matches what the runners consume.
-ARG CLAUDE_CODE_VERSION=2.1.185
+ARG CLAUDE_CODE_VERSION=2.1.186
 ARG CODEX_VERSION=0.141.0
 RUN npm install -g \
       @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
