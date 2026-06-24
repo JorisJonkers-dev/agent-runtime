@@ -75,17 +75,6 @@ data class GitOperationResponse(
     val output: String,
 )
 
-data class GitVerifyRequest(
-    val repoUrl: String,
-    val branch: String? = null,
-)
-
-data class GitVerifyResponse(
-    val read: Boolean,
-    val write: Boolean,
-    val detail: String,
-)
-
 data class HeadlessRequest(
     val kind: com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind,
     val prompt: String,

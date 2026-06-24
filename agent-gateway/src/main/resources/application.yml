@@ -49,10 +49,6 @@ agent-gateway:
     codex-args:
       - --dangerously-bypass-approvals-and-sandbox
       - --dangerously-bypass-hook-trust
-  git:
-    # The deploy-key Secret is mounted into the Pod at this path by
-    # agents-api when it creates the runner Pod (Step 3).
-    deploy-key-dir: /var/run/secrets/agents/github-deploy-key
   staged-inputs:
     dir-name: .agent-inputs
     max-bytes: 5242880

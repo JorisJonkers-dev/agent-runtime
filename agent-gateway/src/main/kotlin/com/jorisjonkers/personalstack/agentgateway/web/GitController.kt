@@ -4,8 +4,6 @@ import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
 import com.jorisjonkers.personalstack.agentgateway.git.GitClient
 import com.jorisjonkers.personalstack.agentgateway.web.dto.CloneRequest
 import com.jorisjonkers.personalstack.agentgateway.web.dto.GitOperationResponse
-import com.jorisjonkers.personalstack.agentgateway.web.dto.GitVerifyRequest
-import com.jorisjonkers.personalstack.agentgateway.web.dto.GitVerifyResponse
 import com.jorisjonkers.personalstack.agentgateway.web.dto.OpenPrRequest
 import com.jorisjonkers.personalstack.agentgateway.web.dto.PushRequest
 import org.springframework.web.bind.annotation.PostMapping
@@ -44,14 +42,6 @@ class GitController(
     ): GitOperationResponse {
         val url = git.openPr(req.repoDir, req.title, req.body, req.base)
         return GitOperationResponse(ok = true, output = url)
-    }
-
-    @PostMapping("/verify")
-    fun verify(
-        @RequestBody req: GitVerifyRequest,
-    ): GitVerifyResponse {
-        val result = git.verify(req.repoUrl, req.branch)
-        return GitVerifyResponse(read = result.read, write = result.write, detail = result.detail)
     }
 
     private fun defaultWorkspaceFor(repoUrl: String): Path {

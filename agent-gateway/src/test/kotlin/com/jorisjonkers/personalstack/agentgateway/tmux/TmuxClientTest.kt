@@ -19,7 +19,6 @@ class TmuxClientTest {
             workspaceRoot = "/workspace",
             tmux = GatewayProperties.Tmux(socketName = "agent-gw", stateDir = "/tmp/agent-gateway-test"),
             cli = GatewayProperties.Cli(claude = "claude", codex = "codex"),
-            git = GatewayProperties.Git(deployKeyDir = "/var/run/secrets/agents/github-deploy-key"),
         )
     private val client = TmuxClient(runner, props)
 

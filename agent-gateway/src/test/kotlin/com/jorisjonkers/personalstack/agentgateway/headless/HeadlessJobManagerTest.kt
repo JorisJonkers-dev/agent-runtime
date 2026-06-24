@@ -38,7 +38,6 @@ class HeadlessJobManagerTest {
                                 "--dangerously-bypass-hook-trust",
                             ),
                     ),
-                git = GatewayProperties.Git(deployKeyDir = "/x"),
             )
         return HeadlessJobManager(
             props = props,

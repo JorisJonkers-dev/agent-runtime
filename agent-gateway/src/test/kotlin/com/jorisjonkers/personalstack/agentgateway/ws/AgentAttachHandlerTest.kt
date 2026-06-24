@@ -45,7 +45,6 @@ class AgentAttachHandlerTest {
             workspaceRoot = "/workspace",
             tmux = GatewayProperties.Tmux(socketName = "agent-gw", stateDir = "/tmp"),
             cli = GatewayProperties.Cli(claude = "claude", codex = "codex"),
-            git = GatewayProperties.Git(deployKeyDir = "/x"),
         )
     private val handlers = mutableListOf<AgentAttachHandler>()
     private val handler = attachHandler(props, TranscriptStore(props))
@@ -623,7 +622,6 @@ class AgentAttachHandlerTest {
                 workspaceRoot = tmp.toString(),
                 tmux = GatewayProperties.Tmux(socketName = "agent-gw", stateDir = tmp.resolve("tmux").toString()),
                 cli = GatewayProperties.Cli(claude = "claude", codex = "codex"),
-                git = GatewayProperties.Git(deployKeyDir = "/x"),
                 transcripts =
                     GatewayProperties.Transcripts(
                         segmentBytes = segmentBytes,

@@ -15,7 +15,6 @@ data class GatewayProperties(
     val workspaceRoot: String,
     val tmux: Tmux,
     val cli: Cli,
-    val git: Git,
     val runner: Runner = Runner(),
     val stagedInputs: StagedInputs = StagedInputs(),
     val transcripts: Transcripts = Transcripts(),
@@ -44,10 +43,6 @@ data class GatewayProperties(
         // redeploy-free value flip.
         val claudeArgs: List<String> = emptyList(),
         val codexArgs: List<String> = emptyList(),
-    )
-
-    data class Git(
-        val deployKeyDir: String,
     )
 
     data class Runner(

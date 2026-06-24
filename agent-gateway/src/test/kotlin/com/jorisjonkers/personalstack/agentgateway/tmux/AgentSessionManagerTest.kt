@@ -65,7 +65,6 @@ class AgentSessionManagerTest {
                             "--dangerously-bypass-hook-trust",
                         ),
                 ),
-            git = GatewayProperties.Git(deployKeyDir = "/x"),
             stagedInputs = stagedInputs,
             transcripts = transcripts,
             // Isolate Codex homes under the temp dir and keep id-capture
@@ -520,7 +519,6 @@ class AgentSessionManagerTest {
                         stateDir = tmp.toString(),
                     ),
                 cli = GatewayProperties.Cli(claude = "/c", codex = "/x"),
-                git = GatewayProperties.Git(deployKeyDir = "/x"),
                 transcripts =
                     GatewayProperties.Transcripts(
                         segmentBytes = 64,

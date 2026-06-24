@@ -16,7 +16,6 @@ class GatewayPropertiesBindingTest {
                     "agent-gateway.tmux.state-dir" to "/tmp/agent-gateway",
                     "agent-gateway.cli.claude" to "claude",
                     "agent-gateway.cli.codex" to "codex",
-                    "agent-gateway.git.deploy-key-dir" to "/var/run/secrets/agents/github-deploy-key",
                     "agent-gateway.runner.setup-id" to "gpu",
                     "agent-gateway.runner.setup-version" to "7",
                     "agent-gateway.runner.setup-hash" to "abc123",

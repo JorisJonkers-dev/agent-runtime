@@ -1,9 +1,10 @@
 #!/bin/sh
 # agent-runner entrypoint. Three responsibilities:
 #
-#   1. Surface the deploy-key mount through to a writable file with
-#      0600 so ssh accepts it. The Vault Secret mount makes the file
-#      world-readable; openssh refuses keys that aren't 0600.
+#   1. Configure git to authenticate to GitHub over HTTPS via the
+#      App-token credential helper (rewriting SSH remotes to HTTPS), so
+#      clones/pushes use the short-lived GitHub App installation token —
+#      no SSH deploy key is mounted or needed.
 #   2. Make the runner's identity reproducible (git user.name +
 #      user.email come from env or fall back to a marker).
 #   3. exec the gateway jar as PID 1 (via tini so children reap).
@@ -436,18 +437,6 @@ if [ -f "$CODEX_HOME/config.toml" ]; then
   rm -f "$codex_tmp"
 fi
 
-# Stage the deploy key into /tmp with restrictive perms. The gateway
-# does the same dance defensively, but doing it once at boot makes
-# manual debugging from the shell less surprising.
-if [ -f /var/run/secrets/agents/github-deploy-key/private_key ]; then
-  cp /var/run/secrets/agents/github-deploy-key/private_key /tmp/agent-deploy-key
-  chmod 0600 /tmp/agent-deploy-key
-  if [ -f /var/run/secrets/agents/github-deploy-key/known_hosts ]; then
-    mkdir -p "$HOME/.ssh"
-    cp /var/run/secrets/agents/github-deploy-key/known_hosts "$HOME/.ssh/known_hosts"
-  fi
-fi
-
 clone_repo_into_workspace() {
   _repo_url="$1"
   _repo_branch="${2:-}"
@@ -491,36 +480,37 @@ clone_repo_into_workspace() {
   fi
 }
 
-# Clone every workspace repository into its own named folder under
-# /workspace. The orchestrator passes REPO_URL (+ optional REPO_BRANCH)
-# for the primary repository and REPO_URLS for additional repositories.
-# /workspace itself remains the multi-repo root where agents start.
-if [ -n "${REPO_URL:-}" ]; then
-  export GIT_SSH_COMMAND="ssh -i /tmp/agent-deploy-key -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=${HOME}/.ssh/known_hosts"
-  clone_repo_into_workspace "$REPO_URL" "${REPO_BRANCH:-}"
-fi
-
-# Keep boot-time clone on the deploy-key path above, then make every
-# interactive git operation prefer HTTPS so the credential helper can
-# provide the short-lived GitHub App token. This fixes pushes from
-# repo-backed workspaces whose SSH deploy key is absent or read-only,
-# and it also covers `gh pr create` when gh shells out to git.
+# Make every git operation prefer HTTPS so the credential helper can
+# provide the short-lived GitHub App token. Repo URLs stored in the SSH
+# form (git@github.com:owner/repo) are rewritten to HTTPS before any
+# clone, so the primary and additional repos all authenticate through the
+# App installation — no per-repo SSH deploy key needed. This also covers
+# `gh pr create` when gh shells out to git.
 git config --global url.https://github.com/.insteadOf git@github.com:
 git config --global url.https://github.com/.insteadOf ssh://git@github.com/
 
 # Bound the App-token credential helper to exactly this workspace's repos
 # (primary + REPO_URLS), exported so the helper and the gateway's child git
 # processes inherit it. Empty (no repo configured) leaves the helper's own
-# default. Set before the multi-repo clone so those clones authenticate.
+# default. Set before any clone so those clones authenticate.
 REPO_ALLOW="$(derive_repo_allow)"
 if [ -n "$REPO_ALLOW" ]; then
   export REPO_ALLOW
 fi
 
+# Clone every workspace repository into its own named folder under
+# /workspace. The orchestrator passes REPO_URL (+ optional REPO_BRANCH)
+# for the primary repository and REPO_URLS for additional repositories.
+# /workspace itself remains the multi-repo root where agents start. All
+# clones go over HTTPS, authenticated by the App-token credential helper.
+if [ -n "${REPO_URL:-}" ]; then
+  clone_repo_into_workspace "$REPO_URL" "${REPO_BRANCH:-}"
+fi
+
 # Multi-repo workspaces: clone every repo in REPO_URLS (space/newline/semicolon
 # separated, each "url[#branch]") into its own subdir of the workspace over
-# HTTPS, authenticated by the App-token credential helper — no per-repo deploy
-# key needed. Idempotent: a repo already cloned is left alone.
+# HTTPS, authenticated by the App-token credential helper. Idempotent: a repo
+# already cloned is left alone.
 if [ -n "${REPO_URLS:-}" ]; then
   for entry in $(printf '%s' "$REPO_URLS" | tr ';\n' '  '); do
     repo_clone_url="${entry%%#*}"
