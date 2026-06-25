@@ -1,4 +1,6 @@
 import type { Provider } from '../shared/types.js'
+import type { Logger } from '../shared/log.js'
+import { redactString } from '../shared/redact.js'
 import type { CredentialBundle } from './credentials.js'
 
 export type AgentsApiProvider = 'CLAUDE' | 'CODEX'
@@ -6,6 +8,7 @@ export type AgentsApiProvider = 'CLAUDE' | 'CODEX'
 export interface AgentsApiClientOptions {
   baseUrl: string
   bearer: string
+  logger?: Logger
 }
 
 export interface CredentialIngestRequest {
@@ -27,11 +30,19 @@ export class AgentsApiClient {
   ) {
     this.endpoint = new URL('/api/v1/internal/credentials', opts.baseUrl).toString()
     this.bearer = opts.bearer
+    this.logger = opts.logger
   }
 
   private readonly bearer: string
+  private readonly logger?: Logger
 
   async postCredentials(req: CredentialIngestRequest): Promise<void> {
+    this.logger?.info('agents-api credential ingest POST starting', {
+      url: this.endpoint,
+      userId: req.userId,
+      provider: req.provider,
+      payloadKeys: Object.keys(req.payload),
+    })
     const res = await this.fetchImpl(this.endpoint, {
       method: 'POST',
       headers: {
@@ -40,9 +51,15 @@ export class AgentsApiClient {
       },
       body: JSON.stringify(req),
     })
-    if (!res.ok) {
-      throw new Error(`agents-api credential ingest failed: ${res.status} ${await safeText(res)}`)
-    }
+    this.logger?.info('agents-api credential ingest POST completed', {
+      url: this.endpoint,
+      status: res.status,
+      ok: res.ok,
+      provider: req.provider,
+    })
+  if (!res.ok) {
+    throw new Error(`agents-api credential ingest failed: ${res.status} ${redactString(await safeText(res))}`)
+  }
   }
 
   storedStatus(): StoredCredentialStatus {

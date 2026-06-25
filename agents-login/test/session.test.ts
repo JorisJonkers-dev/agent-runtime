@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SessionManager, type SessionDeps } from '../src/worker/session.js'
 import { NoopLeaseLock } from '../src/worker/lease.js'
-import { createLogger } from '../src/shared/log.js'
+import { createLogger, type Logger } from '../src/shared/log.js'
 import { fakeSpawner, type Action } from './helpers/fakePty.js'
 
 async function tick(times = 8): Promise<void> {
@@ -17,6 +17,21 @@ interface PostedCredential {
   userId: string
   provider: 'CLAUDE' | 'CODEX'
   payload: Record<string, string>
+}
+
+interface LogEntry {
+  level: 'info' | 'warn' | 'error' | 'debug'
+  msg: string
+  fields?: Record<string, unknown>
+}
+
+function memoryLogger(entries: LogEntry[]): Logger {
+  return {
+    info: (msg, fields) => entries.push({ level: 'info', msg, fields }),
+    warn: (msg, fields) => entries.push({ level: 'warn', msg, fields }),
+    error: (msg, fields) => entries.push({ level: 'error', msg, fields }),
+    debug: (msg, fields) => entries.push({ level: 'debug', msg, fields }),
+  }
 }
 
 function fakeAgentsApi(fail?: Error): { postCredentials: (req: PostedCredential) => Promise<void>; posts: PostedCredential[] } {
@@ -72,6 +87,7 @@ describe('LoginSession state machine', () => {
   function deps(
     scriptFor: (file: string, args: string[]) => Action[],
     lease = new NoopLeaseLock(),
+    logger: Logger = createLogger(),
   ): {
     deps: SessionDeps
     instances: ReturnType<typeof fakeSpawner>['instances']
@@ -83,7 +99,7 @@ describe('LoginSession state machine', () => {
         agentsApi,
         lease,
         paths: { home, codexHome },
-        logger: createLogger(),
+        logger,
         ttlMs: 60_000,
       },
       instances,
@@ -174,6 +190,108 @@ describe('LoginSession state machine', () => {
     expect(agentsApi.posts).toEqual([
       { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
     ])
+  })
+
+  it('finalizes Claude from an OSC8-linked setup-token OAuth token after paste-back', async () => {
+    const token = 'sk-ant-oat01-Osc8SessionToken1234567890_-abcXYZ'
+    const { deps: d } = deps(() => [
+      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+      {
+        type: 'expectStdin',
+        match: () => true,
+        then: [{ type: 'emit', data: `Token: \x1b]8;;${token}\x07copy token\x1b]8;;\x07\r\n` }],
+      },
+    ])
+    const mgr = new SessionManager(d)
+    const started = mgr.start('claude', 'alice')
+    await tick()
+
+    expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
+
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 250)).toBe('succeeded')
+    expect(agentsApi.posts).toEqual([
+      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
+    ])
+  })
+
+  it('finalizes Claude from .credentials.json when setup-token prints no token and stays open', async () => {
+    const token = 'sk-ant-oat01-CredentialsFileToken1234567890_-abcXYZ'
+    const { deps: d } = deps(() => [
+      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+      {
+        type: 'expectStdin',
+        match: () => true,
+        then: [
+          {
+            type: 'emit',
+            data: 'Credential file was updated.\r\n',
+          },
+        ],
+      },
+    ])
+    const mgr = new SessionManager(d)
+    const started = mgr.start('claude', 'alice')
+    await tick()
+
+    writeFileSync(join(home, '.claude', '.credentials.json'), JSON.stringify({ oauth_token: token }))
+    expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
+
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 500)).toBe('succeeded')
+    expect(agentsApi.posts).toEqual([
+      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
+    ])
+  })
+
+  it('redacts setup-token output and records lifecycle log decisions without logging the token', async () => {
+    const token = 'sk-ant-oat01-LogRedactionToken1234567890_-abcXYZ'
+    const logs: LogEntry[] = []
+    const { deps: d } = deps(
+      () => [
+        { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+        {
+          type: 'expectStdin',
+          match: () => true,
+          then: [{ type: 'emit', data: `Your OAuth token: ${token}\r\n` }],
+        },
+      ],
+      new NoopLeaseLock(),
+      memoryLogger(logs),
+    )
+    const mgr = new SessionManager(d)
+    const started = mgr.start('claude', 'alice')
+    await tick()
+
+    expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 500)).toBe('succeeded')
+
+    const serialized = JSON.stringify(logs)
+    expect(serialized).not.toContain(token)
+    expect(serialized).toContain('«redacted»')
+    expect(logs.some((entry) => entry.msg === 'Claude setup-token output scanned')).toBe(true)
+    expect(logs.some((entry) => entry.msg === 'Claude setup-token parse attempt')).toBe(true)
+    expect(logs.some((entry) => entry.msg === 'login session phase transition')).toBe(true)
+  })
+
+  it('fails Claude after a bounded post-redirect timeout with redacted output context', async () => {
+    const { deps: d } = deps(() => [
+      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+      {
+        type: 'expectStdin',
+        match: () => true,
+        then: [{ type: 'emit', data: 'still waiting for opaque-secret-timeout-value-12345678901234567890\r\n' }],
+      },
+    ])
+    d.redirectTimeoutMs = 20
+    const mgr = new SessionManager(d)
+    const started = mgr.start('claude', 'alice')
+    await tick()
+
+    expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
+
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 500)).toBe('failed')
+    expect(mgr.status(started.id)!.error).toMatch(/timed out waiting for Claude credential capture/)
+    expect(mgr.status(started.id)!.error).toContain('«redacted»')
+    expect(agentsApi.posts).toEqual([])
   })
 
   it('drives the Codex device flow with no paste-back', async () => {

@@ -13,6 +13,7 @@ export async function runWorker(): Promise<void> {
   const agentsApi = new AgentsApiClient({
     baseUrl: cfg.agentsApiInternalUrl,
     bearer: cfg.agentsApiInternalBearer,
+    logger,
   })
 
   const lease = new K8sLeaseLock({
@@ -22,7 +23,7 @@ export async function runWorker(): Promise<void> {
     saTokenPath: cfg.saTokenPath,
   })
 
-  const spawner = await createNodePtySpawner()
+  const spawner = await createNodePtySpawner(logger)
 
   const sessions = new SessionManager({
     spawner,

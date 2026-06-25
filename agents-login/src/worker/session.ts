@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { Logger } from '../shared/log.js'
+import { redactString } from '../shared/redact.js'
 import type { Provider, SessionPhase, SessionStatus } from '../shared/types.js'
 import { isTerminal } from '../shared/types.js'
-import { capture, type CredentialPaths } from './credentials.js'
+import { capture, readClaudeCredentialsToken, type CredentialPaths } from './credentials.js'
 import { detectFailure, detectSuccess, parseClaude, parseClaudeToken, parseCodex } from './parse.js'
 import type { PtyProcess, PtySpawner } from './pty.js'
 import type { LeaseLock } from './lease.js'
@@ -15,6 +16,7 @@ export interface SessionDeps {
   paths: CredentialPaths
   logger: Logger
   ttlMs: number
+  redirectTimeoutMs?: number
   now?: () => Date
   // override the launched command for tests / alternate CLIs
   command?: (provider: Provider) => { file: string; args: string[] }
@@ -30,6 +32,10 @@ function defaultCommand(provider: Provider): { file: string; args: string[] } {
 }
 
 const MAX_BUFFER = 256 * 1024
+const DEFAULT_REDIRECT_TIMEOUT_MS = 60_000
+const CLAUDE_CREDENTIAL_POLL_MS = 250
+const LOG_LINE_LIMIT = 512
+const FAILURE_TAIL_LIMIT = 2_000
 
 export class LoginSession {
   readonly id = randomUUID()
@@ -44,6 +50,8 @@ export class LoginSession {
   private buffer = ''
   private proc?: PtyProcess
   private timer?: NodeJS.Timeout
+  private redirectTimer?: NodeJS.Timeout
+  private credentialProbeTimer?: NodeJS.Timeout
   private redirectSubmitted = false
   private updatedBy = 'unknown'
 
@@ -67,12 +75,22 @@ export class LoginSession {
     this.updatedAt = this.nowIso()
   }
 
-  private setPhase(phase: SessionPhase, message?: string): void {
+  private setPhase(phase: SessionPhase, message?: string, reason = 'unspecified'): void {
+    const previous = this.phase
     this.phase = phase
     if (message !== undefined) {
       this.message = message
     }
     this.touch()
+    if (previous !== phase) {
+      this.deps.logger.info('login session phase transition', {
+        sessionId: this.id,
+        provider: this.provider,
+        from: previous,
+        to: phase,
+        reason,
+      })
+    }
   }
 
   status(): SessionStatus {
@@ -94,6 +112,13 @@ export class LoginSession {
   start(updatedBy: string): void {
     this.updatedBy = updatedBy
     const cmd = (this.deps.command ?? defaultCommand)(this.provider)
+    this.deps.logger.info('login session starting', {
+      sessionId: this.id,
+      provider: this.provider,
+      updatedBy,
+      command: cmd.file,
+      args: cmd.args,
+    })
     const env = {
       ...process.env,
       HOME: this.deps.paths.home,
@@ -122,11 +147,38 @@ export class LoginSession {
     }
   }
 
+  private outputTail(limit = FAILURE_TAIL_LIMIT): string {
+    return redactString(this.buffer.slice(Math.max(0, this.buffer.length - limit)))
+  }
+
+  private scanLines(chunk: string): string[] {
+    const lines = chunk.split(/\r?\n/).map((line) => redactString(line.trim()))
+    return lines.filter((line) => line.length > 0).map((line) => line.slice(0, LOG_LINE_LIMIT))
+  }
+
+  private logClaudeTokenParseAttempt(source: string, matched: boolean, reason: string): void {
+    this.deps.logger.info('Claude setup-token parse attempt', {
+      sessionId: this.id,
+      source,
+      matched,
+      reason,
+    })
+  }
+
   private onData(chunk: string, updatedBy: string): void {
     this.append(chunk)
 
     if (isTerminal(this.phase) || this.phase === 'finalizing') {
       return
+    }
+
+    if (this.provider === 'claude') {
+      this.deps.logger.info('Claude setup-token output scanned', {
+        sessionId: this.id,
+        phase: this.phase,
+        bytes: chunk.length,
+        lines: this.scanLines(chunk),
+      })
     }
 
     if (detectFailure(this.buffer) && (this.phase === 'starting' || this.redirectSubmitted)) {
@@ -139,7 +191,11 @@ export class LoginSession {
         const { authorizeUrl } = parseClaude(this.buffer)
         if (authorizeUrl) {
           this.authorizeUrl = authorizeUrl
-          this.setPhase('awaiting_url', 'Open the authorize URL, approve, then paste the authorization code.')
+          this.setPhase(
+            'awaiting_url',
+            'Open the authorize URL, approve, then paste the authorization code.',
+            'Claude authorize URL detected',
+          )
         }
       }
     } else {
@@ -152,14 +208,25 @@ export class LoginSession {
           this.verificationUrl = parsed.verificationUrl
         }
         if (this.deviceCode && this.phase === 'starting') {
-          this.setPhase('awaiting_device', 'Enter the device code at the verification URL.')
+          this.setPhase('awaiting_device', 'Enter the device code at the verification URL.', 'Codex device code detected')
         }
       }
     }
 
-    const claudeTokenCaptured = this.provider === 'claude' && this.redirectSubmitted && parseClaudeToken(this.buffer)
-    if (claudeTokenCaptured || detectSuccess(this.provider, this.buffer)) {
-      void this.finalize(updatedBy)
+    const claudeTokenCaptured = this.provider === 'claude' && this.redirectSubmitted ? parseClaudeToken(this.buffer) : undefined
+    if (this.provider === 'claude' && this.redirectSubmitted) {
+      this.logClaudeTokenParseAttempt('pty-output', claudeTokenCaptured !== undefined, 'PTY output received after redirect')
+    }
+    if (claudeTokenCaptured) {
+      void this.finalize(updatedBy, claudeTokenCaptured, 'Claude OAuth token parsed from PTY output')
+      return
+    }
+    if (detectSuccess(this.provider, this.buffer)) {
+      void this.finalize(updatedBy, undefined, 'CLI success output detected')
+      return
+    }
+    if (this.provider === 'claude' && this.redirectSubmitted) {
+      void this.probeClaudeCredentialFile('PTY output received after redirect')
     }
   }
 
@@ -167,6 +234,13 @@ export class LoginSession {
     if (isTerminal(this.phase) || this.phase === 'finalizing') {
       return
     }
+    this.deps.logger.info('login session CLI exited', {
+      sessionId: this.id,
+      provider: this.provider,
+      exitCode,
+      redirectSubmitted: this.redirectSubmitted,
+      phase: this.phase,
+    })
     // A clean exit after the operator submitted the code (Claude setup-token) or
     // after the device prompt was shown and approved (Codex) means the CLI wrote
     // its credentials — capture them even if no success line was matched.
@@ -175,7 +249,11 @@ export class LoginSession {
       this.redirectSubmitted ||
       (this.provider === 'codex' && this.phase === 'awaiting_device')
     if (exitCode === 0 && completed) {
-      void this.finalize(this.updatedBy)
+      const claudeToken = this.provider === 'claude' ? parseClaudeToken(this.buffer) : undefined
+      if (this.provider === 'claude') {
+        this.logClaudeTokenParseAttempt('pty-output', claudeToken !== undefined, 'CLI exited cleanly after login flow')
+      }
+      void this.finalize(this.updatedBy, claudeToken, 'CLI exited cleanly after login flow')
       return
     }
     this.fail(`CLI exited with code ${exitCode} before login completed`)
@@ -199,12 +277,78 @@ export class LoginSession {
       return { ok: false, error: 'authorization code is required' }
     }
     this.redirectSubmitted = true
+    this.deps.logger.info('Claude redirect submission received', {
+      sessionId: this.id,
+      provider: this.provider,
+      inputBytes: trimmed.length,
+    })
     this.proc?.write(trimmed + '\r')
     // Stay in awaiting_url so the success line emitted by the CLI after the
     // paste-back still drives finalize(); only finalize() flips to finalizing.
     this.message = 'Submitted the authorization code; completing login…'
     this.touch()
+    this.startRedirectTimeout()
+    void this.probeClaudeCredentialFile('redirect submitted')
     return { ok: true }
+  }
+
+  private startRedirectTimeout(): void {
+    const timeoutMs = this.deps.redirectTimeoutMs ?? DEFAULT_REDIRECT_TIMEOUT_MS
+    if (this.redirectTimer) {
+      clearTimeout(this.redirectTimer)
+    }
+    this.redirectTimer = setTimeout(() => {
+      if (isTerminal(this.phase) || this.phase === 'finalizing') {
+        return
+      }
+      this.fail(`timed out waiting for Claude credential capture after redirect submission; output_tail=${this.outputTail()}`)
+    }, timeoutMs)
+    if (typeof this.redirectTimer.unref === 'function') {
+      this.redirectTimer.unref()
+    }
+    this.scheduleClaudeCredentialProbe(Math.min(CLAUDE_CREDENTIAL_POLL_MS, Math.max(10, Math.floor(timeoutMs / 2))))
+  }
+
+  private scheduleClaudeCredentialProbe(delayMs: number): void {
+    if (this.provider !== 'claude' || !this.redirectSubmitted || isTerminal(this.phase) || this.phase === 'finalizing') {
+      return
+    }
+    if (this.credentialProbeTimer) {
+      clearTimeout(this.credentialProbeTimer)
+      this.credentialProbeTimer = undefined
+    }
+    this.credentialProbeTimer = setTimeout(() => {
+      void this.probeClaudeCredentialFile('credential file poll')
+    }, delayMs)
+    if (typeof this.credentialProbeTimer.unref === 'function') {
+      this.credentialProbeTimer.unref()
+    }
+  }
+
+  private async probeClaudeCredentialFile(reason: string): Promise<void> {
+    if (this.provider !== 'claude' || !this.redirectSubmitted || isTerminal(this.phase) || this.phase === 'finalizing') {
+      return
+    }
+    try {
+      const token = await readClaudeCredentialsToken(this.deps.paths)
+      this.deps.logger.info('Claude credential file parse attempt', {
+        sessionId: this.id,
+        source: '$HOME/.claude/.credentials.json',
+        matched: token !== undefined,
+        reason,
+      })
+      if (token) {
+        await this.finalize(this.updatedBy, token, 'Claude OAuth token parsed from credentials file')
+        return
+      }
+    } catch (err) {
+      this.deps.logger.warn('Claude credential file parse attempt failed', {
+        sessionId: this.id,
+        reason,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+    this.scheduleClaudeCredentialProbe(CLAUDE_CREDENTIAL_POLL_MS)
   }
 
   private clearTimer(): void {
@@ -212,38 +356,71 @@ export class LoginSession {
       clearTimeout(this.timer)
       this.timer = undefined
     }
+    if (this.redirectTimer) {
+      clearTimeout(this.redirectTimer)
+      this.redirectTimer = undefined
+    }
+    if (this.credentialProbeTimer) {
+      clearTimeout(this.credentialProbeTimer)
+      this.credentialProbeTimer = undefined
+    }
   }
 
-  private async finalize(updatedBy: string): Promise<void> {
+  private async finalize(updatedBy: string, claudeTokenOverride?: string, reason = 'completion detected'): Promise<void> {
     if (this.phase === 'finalizing' || isTerminal(this.phase)) {
       return
     }
-    this.setPhase('finalizing', 'Capturing credentials…')
+    this.setPhase('finalizing', 'Capturing credentials…', reason)
     try {
       // For Claude the canonical credential is the OAuth token setup-token
       // prints to stdout, not a file; parse it from the accumulated buffer.
-      const claudeToken = this.provider === 'claude' ? parseClaudeToken(this.buffer) : undefined
+      const claudeToken = this.provider === 'claude' ? (claudeTokenOverride ?? parseClaudeToken(this.buffer)) : undefined
+      this.deps.logger.info('login session finalize starting', {
+        sessionId: this.id,
+        provider: this.provider,
+        reason,
+        claudeTokenMatched: this.provider === 'claude' ? claudeToken !== undefined : undefined,
+      })
       const bundle = await capture(this.provider, this.deps.paths, updatedBy, this.now, claudeToken)
+      this.deps.logger.info('login session credential capture completed', {
+        sessionId: this.id,
+        provider: this.provider,
+        dataKeys: Object.keys(bundle.data),
+      })
       const provider = providerForApi(this.provider)
       const payload = payloadForApi(this.provider, bundle)
       await this.deps.lease.withLock(async () => {
+        this.deps.logger.info('login session posting credentials to agents-api', {
+          sessionId: this.id,
+          provider: this.provider,
+          apiProvider: provider,
+          payloadKeys: Object.keys(payload),
+        })
         await this.deps.agentsApi.postCredentials({ userId: updatedBy, provider, payload })
       })
       this.clearTimer()
       this.proc?.kill()
-      this.setPhase('succeeded', 'Credentials written.')
+      this.setPhase('succeeded', 'Credentials written.', 'credentials captured and posted to agents-api')
       this.deps.logger.info('login session succeeded', { sessionId: this.id, provider: this.provider })
     } catch (err) {
-      this.fail(err instanceof Error ? err.message : 'failed to finalize login')
+      const error = redactString(err instanceof Error ? err.message : 'failed to finalize login')
+      this.deps.logger.warn('login session finalize failed', {
+        sessionId: this.id,
+        provider: this.provider,
+        reason,
+        error,
+      })
+      this.fail(error)
     }
   }
 
   private fail(reason: string): void {
+    const safeReason = redactString(reason)
     this.clearTimer()
-    this.error = reason
-    this.setPhase('failed')
+    this.error = safeReason
+    this.setPhase('failed', undefined, safeReason)
     this.proc?.kill()
-    this.deps.logger.warn('login session failed', { sessionId: this.id, provider: this.provider })
+    this.deps.logger.warn('login session failed', { sessionId: this.id, provider: this.provider, reason: safeReason })
   }
 
   cancel(reason = 'cancelled by operator'): void {
@@ -252,7 +429,7 @@ export class LoginSession {
     }
     this.clearTimer()
     this.message = reason
-    this.setPhase('cancelled')
+    this.setPhase('cancelled', undefined, reason)
     this.proc?.kill()
   }
 }

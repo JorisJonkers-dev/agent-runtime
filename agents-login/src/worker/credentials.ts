@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Provider } from '../shared/types.js'
+import { parseClaudeToken } from './parse.js'
 
 export const SCHEMA_VERSION = '1'
 
@@ -24,6 +25,11 @@ async function readUtf8OrUndefined(path: string): Promise<string | undefined> {
   } catch {
     return undefined
   }
+}
+
+export async function readClaudeCredentialsToken(paths: CredentialPaths): Promise<string | undefined> {
+  const credentials = await readUtf8OrUndefined(join(paths.home, '.claude', '.credentials.json'))
+  return credentials === undefined ? undefined : parseClaudeToken(credentials)
 }
 
 /**
@@ -52,13 +58,14 @@ export async function captureClaude(
   if (!oauthToken && credentials === undefined) {
     throw new Error('no Claude credential captured: setup-token printed no token and no .credentials.json was written')
   }
+  const capturedToken = oauthToken ?? (credentials === undefined ? undefined : parseClaudeToken(credentials))
   const data: Record<string, string> = {
     schema_version: SCHEMA_VERSION,
     updated_at: now().toISOString(),
     updated_by: updatedBy,
   }
-  if (oauthToken) {
-    data.oauth_token = oauthToken
+  if (capturedToken) {
+    data.oauth_token = capturedToken
   }
   if (credentials !== undefined) {
     data.credentials_json = credentials

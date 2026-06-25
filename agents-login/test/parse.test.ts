@@ -87,6 +87,17 @@ describe('PTY output parsing', () => {
     expect(parseClaudeToken(buf)).toBe(token)
   })
 
+  it('parses a bare setup-token OAuth token line', () => {
+    const token = 'sk-ant-oat01-BareLineToken1234567890_-abcXYZ'
+    expect(parseClaudeToken(`${token}\r\n`)).toBe(token)
+  })
+
+  it('parses the setup-token OAuth token from an OSC 8 hyperlink target', () => {
+    const token = 'sk-ant-oat01-Osc8TokenTarget1234567890_-abcXYZ'
+    const raw = `Your OAuth token: \x1b]8;;${token}\x07open token\x1b]8;;\x07\r\n`
+    expect(parseClaudeToken(raw)).toBe(token)
+  })
+
   it('returns undefined when no token was printed', () => {
     expect(parseClaudeToken('Visit https://claude.com/cai/oauth/authorize?code=true')).toBeUndefined()
   })

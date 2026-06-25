@@ -71,14 +71,27 @@ export function buildWorkerServer(deps: WorkerServerDeps): FastifyInstance {
 
   app.post('/sessions', async (req, reply) => {
     const body = (req.body ?? {}) as { provider?: unknown; updatedBy?: unknown }
+    deps.logger.info('worker session start request received', {
+      provider: typeof body.provider === 'string' ? body.provider : 'invalid',
+      updatedBy: typeof body.updatedBy === 'string' && body.updatedBy ? body.updatedBy : 'unknown',
+    })
     if (!isProvider(body.provider)) {
       return reply.code(400).send({ error: 'provider must be "claude" or "codex"' })
     }
     const updatedBy = typeof body.updatedBy === 'string' && body.updatedBy ? body.updatedBy : 'unknown'
     try {
       const status = deps.sessions.start(body.provider, updatedBy)
+      deps.logger.info('worker session start request completed', {
+        sessionId: status.id,
+        provider: status.provider,
+        phase: status.phase,
+      })
       return reply.code(201).send(safeStatus(status))
     } catch (err) {
+      deps.logger.warn('worker session start request failed', {
+        provider: body.provider,
+        error: err instanceof Error ? err.message : 'cannot start session',
+      })
       return reply.code(409).send({ error: err instanceof Error ? err.message : 'cannot start session' })
     }
   })
@@ -87,8 +100,14 @@ export function buildWorkerServer(deps: WorkerServerDeps): FastifyInstance {
     const { id } = req.params as { id: string }
     const status = deps.sessions.status(id)
     if (!status) {
+      deps.logger.warn('worker session status request missed', { sessionId: id })
       return reply.code(404).send({ error: 'no matching session' })
     }
+    deps.logger.info('worker session status request completed', {
+      sessionId: id,
+      provider: status.provider,
+      phase: status.phase,
+    })
     return reply.send(safeStatus(status))
   })
 
@@ -98,16 +117,23 @@ export function buildWorkerServer(deps: WorkerServerDeps): FastifyInstance {
     if (typeof body.url !== 'string') {
       return reply.code(400).send({ error: 'url is required' })
     }
+    deps.logger.info('worker redirect submission request received', {
+      sessionId: id,
+      inputBytes: body.url.length,
+    })
     const result = deps.sessions.submitRedirectUrl(id, body.url)
     if (!result.ok) {
+      deps.logger.warn('worker redirect submission request rejected', { sessionId: id, error: result.error })
       return reply.code(400).send({ error: result.error })
     }
+    deps.logger.info('worker redirect submission request completed', { sessionId: id })
     return reply.send({ ok: true })
   })
 
   app.post('/sessions/:id/cancel', async (req, reply) => {
     const { id } = req.params as { id: string }
     const result = deps.sessions.cancel(id)
+    deps.logger.info('worker cancel request completed', { sessionId: id, ok: result.ok })
     return reply.code(result.ok ? 200 : 404).send(result)
   })
 

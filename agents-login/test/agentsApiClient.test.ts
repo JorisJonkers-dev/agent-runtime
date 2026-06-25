@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { AgentsApiClient, payloadForApi, providerForApi } from '../src/worker/agentsApiClient.js'
+import type { Logger } from '../src/shared/log.js'
+
+function testLogger(lines: Array<{ msg: string; fields?: Record<string, unknown> }>): Logger {
+  return {
+    info: (msg, fields) => lines.push({ msg, fields }),
+    warn: (msg, fields) => lines.push({ msg, fields }),
+    error: (msg, fields) => lines.push({ msg, fields }),
+    debug: (msg, fields) => lines.push({ msg, fields }),
+  }
+}
 
 describe('AgentsApiClient', () => {
   it('posts credentials to the internal ingest endpoint', async () => {
@@ -37,6 +47,42 @@ describe('AgentsApiClient', () => {
     await expect(
       client.postCredentials({ userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: 'tok' } }),
     ).rejects.toThrow(/503 nope/)
+  })
+
+  it('logs the ingest POST URL and response status without payload values', async () => {
+    const lines: Array<{ msg: string; fields?: Record<string, unknown> }> = []
+    const client = new AgentsApiClient(
+      { baseUrl: 'http://agents-api.local:8082', bearer: 'secret-bearer', logger: testLogger(lines) },
+      async () => new Response(null, { status: 204 }),
+    )
+
+    await client.postCredentials({
+      userId: 'alice',
+      provider: 'CLAUDE',
+      payload: { oauth_token: 'sk-ant-oat01-ShouldNotAppear1234567890' },
+    })
+
+    expect(lines).toEqual([
+      {
+        msg: 'agents-api credential ingest POST starting',
+        fields: {
+          url: 'http://agents-api.local:8082/api/v1/internal/credentials',
+          userId: 'alice',
+          provider: 'CLAUDE',
+          payloadKeys: ['oauth_token'],
+        },
+      },
+      {
+        msg: 'agents-api credential ingest POST completed',
+        fields: {
+          url: 'http://agents-api.local:8082/api/v1/internal/credentials',
+          status: 204,
+          ok: true,
+          provider: 'CLAUDE',
+        },
+      },
+    ])
+    expect(JSON.stringify(lines)).not.toContain('ShouldNotAppear')
   })
 
   it('maps provider names to the uppercase API enum', () => {

@@ -26,7 +26,7 @@ export function stripAnsi(input: string): string {
 }
 
 // OSC 8 hyperlink targets, in emission order, from the raw (pre-strip) buffer.
-function oscHyperlinkTargets(raw: string): string[] {
+export function oscHyperlinkTargets(raw: string): string[] {
   const targets: string[] = []
   OSC8_HYPERLINK.lastIndex = 0
   let m: RegExpExecArray | null
@@ -76,6 +76,12 @@ export function parseClaude(buffer: string): ClaudeParse {
 const CLAUDE_TOKEN_PATTERN = /(sk-ant-oat[0-9]{2}-[A-Za-z0-9_-]{20,})/
 
 export function parseClaudeToken(buffer: string): string | undefined {
+  for (const uri of oscHyperlinkTargets(buffer)) {
+    const matched = uri.match(CLAUDE_TOKEN_PATTERN)?.[1]
+    if (matched) {
+      return matched
+    }
+  }
   return stripAnsi(buffer).match(CLAUDE_TOKEN_PATTERN)?.[1]
 }
 
