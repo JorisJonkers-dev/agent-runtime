@@ -152,6 +152,30 @@ describe('LoginSession state machine', () => {
     ])
   })
 
+  it('finalizes Claude promptly when setup-token prints the OAuth token after paste-back but stays open', async () => {
+    // Production regression: the worker waited for a success phrase or process
+    // exit, so a CLI that printed the token and kept the PTY open never posted.
+    const token = 'sk-ant-oat01-NoExitToken1234567890_-abcXYZ'
+    const { deps: d } = deps(() => [
+      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+      {
+        type: 'expectStdin',
+        match: () => true,
+        then: [{ type: 'emit', data: `CLAUDE_CODE_OAUTH_TOKEN=${token}\r\n` }],
+      },
+    ])
+    const mgr = new SessionManager(d)
+    const started = mgr.start('claude', 'alice')
+    await tick()
+
+    expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
+
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 250)).toBe('succeeded')
+    expect(agentsApi.posts).toEqual([
+      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
+    ])
+  })
+
   it('drives the Codex device flow with no paste-back', async () => {
     writeFileSync(join(codexHome, 'auth.json'), '{"tokens":{}}')
     writeFileSync(join(codexHome, 'config.toml'), 'model="x"\n')

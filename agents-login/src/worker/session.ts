@@ -129,7 +129,7 @@ export class LoginSession {
       return
     }
 
-    if (detectFailure(this.buffer) && this.phase === 'starting') {
+    if (detectFailure(this.buffer) && (this.phase === 'starting' || this.redirectSubmitted)) {
       this.fail('CLI reported a login failure')
       return
     }
@@ -157,7 +157,8 @@ export class LoginSession {
       }
     }
 
-    if (detectSuccess(this.provider, this.buffer)) {
+    const claudeTokenCaptured = this.provider === 'claude' && this.redirectSubmitted && parseClaudeToken(this.buffer)
+    if (claudeTokenCaptured || detectSuccess(this.provider, this.buffer)) {
       void this.finalize(updatedBy)
     }
   }
