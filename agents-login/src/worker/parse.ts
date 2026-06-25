@@ -69,7 +69,7 @@ export function parseClaude(buffer: string): ClaudeParse {
 }
 
 export function detectClaudeCodePrompt(buffer: string): boolean {
-  return /paste\s+code\s+here\s+if\s+prompted\s*>/i.test(stripAnsi(buffer))
+  return /paste\s*code\s*here\s*if\s*prompted\s*>/i.test(stripAnsi(buffer))
 }
 
 export interface ClaudeRedirectCode {

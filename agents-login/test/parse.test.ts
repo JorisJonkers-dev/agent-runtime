@@ -57,6 +57,9 @@ describe('PTY output parsing', () => {
   })
 
   it('detects the Claude setup-token code prompt', () => {
+    expect(detectClaudeCodePrompt('\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>')).toBe(
+      true,
+    )
     expect(detectClaudeCodePrompt('Paste code here if prompted >')).toBe(true)
     expect(detectClaudeCodePrompt('Opening browser to sign in...')).toBe(false)
   })

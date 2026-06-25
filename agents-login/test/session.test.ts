@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { SessionManager, type SessionDeps } from '../src/worker/session.js'
+import { LoginSession, SessionManager, type SessionDeps } from '../src/worker/session.js'
 import { NoopLeaseLock } from '../src/worker/lease.js'
 import { createLogger, type Logger } from '../src/shared/log.js'
 import { fakeSpawner, type Action } from './helpers/fakePty.js'
@@ -189,6 +189,42 @@ describe('LoginSession state machine', () => {
 
     expect(writes).toEqual(['queued-code-123\r'])
     expect(exitCbs.length).toBe(1)
+  })
+
+  it('writes Claude authorization codes to the live PTY and fails if the handle is missing', async () => {
+    const { deps: liveDeps, instances } = deps(() => [
+      { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\nPaste code here if prompted >' },
+      { type: 'expectStdin', match: () => true, then: [] },
+    ])
+    const live = new LoginSession('claude', liveDeps)
+    live.start('alice')
+    await tick()
+
+    expect(
+      live.submitRedirectUrl('https://platform.claude.com/oauth/code/callback?code=live-code-123&state=state-1').ok,
+    ).toBe(true)
+    expect(instances[0].writes).toEqual(['live-code-123\r'])
+
+    const logs: LogEntry[] = []
+    const { deps: missingDeps } = deps(
+      () => [{ type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\nPaste code here if prompted >' }],
+      new NoopLeaseLock(),
+      memoryLogger(logs),
+    )
+    const missing = new LoginSession('claude', missingDeps)
+    missing.start('alice')
+    await tick()
+    ;(missing as unknown as { proc?: undefined }).proc = undefined
+
+    const result = missing.submitRedirectUrl('https://platform.claude.com/oauth/code/callback?code=lost-code-456')
+
+    expect(result).toEqual({
+      ok: false,
+      error: 'cannot submit Claude authorization code: PTY process handle missing',
+    })
+    expect(missing.status().phase).toBe('failed')
+    expect(missing.status().error).toBe('cannot submit Claude authorization code: PTY process handle missing')
+    expect(logs.some((entry) => entry.level === 'error' && entry.msg.includes('PTY process handle missing'))).toBe(true)
   })
 
   it('captures the setup-token OAuth token from stdout when no credentials file is written', async () => {

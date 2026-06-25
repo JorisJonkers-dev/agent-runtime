@@ -242,7 +242,15 @@ export class LoginSession {
   }
 
   private maybeSubmitPendingClaudeCode(): void {
-    if (!this.pendingClaudeCode || this.redirectSubmitted || !this.proc || !detectClaudeCodePrompt(this.buffer)) {
+    if (!this.pendingClaudeCode || this.redirectSubmitted || !detectClaudeCodePrompt(this.buffer)) {
+      return
+    }
+    if (!this.proc) {
+      this.deps.logger.error('Claude authorization code submission failed: PTY process handle missing', {
+        sessionId: this.id,
+        provider: this.provider,
+      })
+      this.fail('cannot submit Claude authorization code: PTY process handle missing')
       return
     }
     const code = this.pendingClaudeCode
@@ -305,6 +313,18 @@ export class LoginSession {
     const parsed = parseClaudeRedirectCode(url)
     if (!parsed) {
       return { ok: false, error: 'authorization code is required' }
+    }
+    if (!this.proc) {
+      const reason = 'cannot submit Claude authorization code: PTY process handle missing'
+      this.deps.logger.error('Claude redirect submission failed: PTY process handle missing', {
+        sessionId: this.id,
+        provider: this.provider,
+        inputBytes: url.trim().length,
+        codeBytes: parsed.code.length,
+        inputSource: parsed.source,
+      })
+      this.fail(reason)
+      return { ok: false, error: reason }
     }
     this.deps.logger.info('Claude redirect submission received', {
       sessionId: this.id,
