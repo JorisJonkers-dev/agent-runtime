@@ -42,6 +42,45 @@ check_agent_kit_manifests() {
   check_agent_kit_manifest "Codex" "${CODEX_HOME}/.knowledge-system-version"
 }
 
+prepare_injected_credentials() {
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    mkdir -p "$CLAUDE_CONFIG_DIR"
+    chmod 0700 "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
+    claude_credentials_tmp=$(mktemp)
+    if jq -n --arg token "$CLAUDE_CODE_OAUTH_TOKEN" '
+          {
+            claudeAiOauth: {
+              accessToken: $token,
+              refreshToken: "",
+              expiresAt: 4102444800000,
+              scopes: ["user:inference", "user:profile"]
+            }
+          }
+        ' > "$claude_credentials_tmp"; then
+      chmod 0600 "$claude_credentials_tmp"
+      mv "$claude_credentials_tmp" "$CLAUDE_CONFIG_DIR/.credentials.json"
+      chmod 0600 "$CLAUDE_CONFIG_DIR/.credentials.json"
+    else
+      rm -f "$claude_credentials_tmp"
+      echo "[entrypoint] WARN: failed to render Claude Code OAuth credentials"
+    fi
+  fi
+
+  if [ -n "${AGENT_CODEX_AUTH_JSON_FILE:-}" ] && [ -f "$AGENT_CODEX_AUTH_JSON_FILE" ]; then
+    mkdir -p "$CODEX_HOME"
+    chmod 0700 "$CODEX_HOME" 2>/dev/null || true
+    cp "$AGENT_CODEX_AUTH_JSON_FILE" "$CODEX_HOME/auth.json"
+    chmod 0600 "$CODEX_HOME/auth.json"
+  fi
+
+  if [ -n "${AGENT_CODEX_CONFIG_TOML_FILE:-}" ] && [ -f "$AGENT_CODEX_CONFIG_TOML_FILE" ]; then
+    mkdir -p "$CODEX_HOME"
+    chmod 0700 "$CODEX_HOME" 2>/dev/null || true
+    cp "$AGENT_CODEX_CONFIG_TOML_FILE" "$CODEX_HOME/config.toml"
+    chmod 0600 "$CODEX_HOME/config.toml"
+  fi
+}
+
 # Strip a GitHub remote (ssh or https) down to its owner/repo slug.
 repo_slug() {
   printf '%s' "$1" | sed \
@@ -233,6 +272,12 @@ if [ "${AGENT_RUNNER_ENTRYPOINT_SELF_TEST:-}" = "otel-resource-attributes" ]; th
   exit 0
 fi
 
+if [ "${AGENT_RUNNER_ENTRYPOINT_SELF_TEST:-}" = "credentials" ]; then
+  prepare_injected_credentials
+  exit 0
+fi
+
+prepare_injected_credentials
 check_agent_kit_manifests
 if [ -z "${OTEL_SERVICE_NAME:-}" ]; then
   export OTEL_SERVICE_NAME="agent-gateway"

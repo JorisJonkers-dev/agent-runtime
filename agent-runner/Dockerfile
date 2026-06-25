@@ -223,6 +223,35 @@ RUN set -eu; \
     test -f "${tmp}/workspace/agents/.specify/.agent-kit-sdd-seed.sha256"; \
     test "$(SERVICE_VERSION=img DEPLOYMENT_ENVIRONMENT=prod OTEL_RESOURCE_ATTRIBUTES='team=agents' AGENT_RUNNER_ENTRYPOINT_SELF_TEST=otel-resource-attributes /opt/entrypoint.sh)" = 'team=agents,service.version=img,deployment.environment=prod'; \
     test "$(SERVICE_VERSION=img DEPLOYMENT_ENVIRONMENT=prod OTEL_RESOURCE_ATTRIBUTES='service.version=operator,team=agents' AGENT_RUNNER_ENTRYPOINT_SELF_TEST=otel-resource-attributes /opt/entrypoint.sh)" = 'service.version=operator,team=agents,deployment.environment=prod'; \
+    cred_tmp="$(mktemp -d)"; \
+    mkdir -p "${cred_tmp}/src" "${cred_tmp}/home/.claude" "${cred_tmp}/home/.codex"; \
+    printf '{"old":"claude"}\n' > "${cred_tmp}/home/.claude/.credentials.json"; \
+    printf '{"token":"codex-auth"}\n' > "${cred_tmp}/src/auth.json"; \
+    printf 'model = "codex-test"\n' > "${cred_tmp}/src/config.toml"; \
+    cred_output="$(HOME="${cred_tmp}/home" CODEX_HOME="${cred_tmp}/home/.codex" CLAUDE_CONFIG_DIR="${cred_tmp}/home/.claude" CLAUDE_CODE_OAUTH_TOKEN='claude-secret-token' AGENT_CODEX_AUTH_JSON_FILE="${cred_tmp}/src/auth.json" AGENT_CODEX_CONFIG_TOML_FILE="${cred_tmp}/src/config.toml" AGENT_RUNNER_ENTRYPOINT_SELF_TEST=credentials /opt/entrypoint.sh)"; \
+    test -z "${cred_output}"; \
+    ! printf '%s\n' "${cred_output}" | grep -q 'claude-secret-token'; \
+    test "$(jq -r '.claudeAiOauth.accessToken' "${cred_tmp}/home/.claude/.credentials.json")" = 'claude-secret-token'; \
+    test "$(jq -r '.claudeAiOauth.refreshToken' "${cred_tmp}/home/.claude/.credentials.json")" = ''; \
+    test "$(jq -r '.claudeAiOauth.expiresAt' "${cred_tmp}/home/.claude/.credentials.json")" = '4102444800000'; \
+    test "$(jq -r '.claudeAiOauth.scopes | join(",")' "${cred_tmp}/home/.claude/.credentials.json")" = 'user:inference,user:profile'; \
+    test "$(stat -c '%a' "${cred_tmp}/home/.claude/.credentials.json")" = '600'; \
+    cmp "${cred_tmp}/src/auth.json" "${cred_tmp}/home/.codex/auth.json"; \
+    cmp "${cred_tmp}/src/config.toml" "${cred_tmp}/home/.codex/config.toml"; \
+    test "$(stat -c '%a' "${cred_tmp}/home/.codex/auth.json")" = '600'; \
+    test "$(stat -c '%a' "${cred_tmp}/home/.codex/config.toml")" = '600'; \
+    before="$(sha256sum "${cred_tmp}/home/.claude/.credentials.json" "${cred_tmp}/home/.codex/auth.json" "${cred_tmp}/home/.codex/config.toml")"; \
+    cred_output="$(HOME="${cred_tmp}/home" CODEX_HOME="${cred_tmp}/home/.codex" CLAUDE_CONFIG_DIR="${cred_tmp}/home/.claude" CLAUDE_CODE_OAUTH_TOKEN='claude-secret-token' AGENT_CODEX_AUTH_JSON_FILE="${cred_tmp}/src/auth.json" AGENT_CODEX_CONFIG_TOML_FILE="${cred_tmp}/src/config.toml" AGENT_RUNNER_ENTRYPOINT_SELF_TEST=credentials /opt/entrypoint.sh)"; \
+    after="$(sha256sum "${cred_tmp}/home/.claude/.credentials.json" "${cred_tmp}/home/.codex/auth.json" "${cred_tmp}/home/.codex/config.toml")"; \
+    test -z "${cred_output}"; \
+    test "${before}" = "${after}"; \
+    noop_tmp="$(mktemp -d)"; \
+    cred_output="$(HOME="${noop_tmp}/home" CODEX_HOME="${noop_tmp}/home/.codex" CLAUDE_CONFIG_DIR="${noop_tmp}/home/.claude" AGENT_CODEX_AUTH_JSON_FILE="${noop_tmp}/missing-auth.json" AGENT_CODEX_CONFIG_TOML_FILE="${noop_tmp}/missing-config.toml" AGENT_RUNNER_ENTRYPOINT_SELF_TEST=credentials /opt/entrypoint.sh)"; \
+    test -z "${cred_output}"; \
+    test ! -e "${noop_tmp}/home/.claude/.credentials.json"; \
+    test ! -e "${noop_tmp}/home/.codex/auth.json"; \
+    test ! -e "${noop_tmp}/home/.codex/config.toml"; \
+    rm -rf "${cred_tmp}" "${noop_tmp}"; \
     rm -rf "${tmp}"
 
 # Shared token helper used by gh, GitHub MCP, and Git's credential
