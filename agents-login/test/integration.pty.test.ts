@@ -69,7 +69,10 @@ describe('real-PTY integration with fake CLIs', () => {
       const claude = mgr.start('claude', 'alice')
       await waitFor(() => mgr.status(claude.id)!.phase === 'awaiting_url')
       expect(mgr.status(claude.id)!.authorizeUrl).toContain('claude.ai/oauth/authorize')
-      const sub = mgr.submitRedirectUrl(claude.id, 'https://claude.ai/redirect?code=2')
+      const sub = mgr.submitRedirectUrl(
+        claude.id,
+        'https://platform.claude.com/oauth/code/callback?code=integration-code-2&state=integration-state-2',
+      )
       expect(sub.ok).toBe(true)
       await waitFor(() => mgr.status(claude.id)!.phase === 'succeeded')
       expect(posts[0]).toMatchObject({ userId: 'alice', provider: 'CLAUDE' })

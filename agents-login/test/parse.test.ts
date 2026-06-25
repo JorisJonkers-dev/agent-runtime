@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   parseClaude,
+  parseClaudeRedirectCode,
   parseClaudeToken,
   parseCodex,
+  detectClaudeCodePrompt,
   detectSuccess,
   detectFailure,
   stripAnsi,
@@ -52,6 +54,19 @@ describe('PTY output parsing', () => {
     const url = 'https://claude.com/cai/oauth/authorize?code=true&state=abc'
     const raw = `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`
     expect(parseClaude(raw).authorizeUrl).toBe(url)
+  })
+
+  it('detects the Claude setup-token code prompt', () => {
+    expect(detectClaudeCodePrompt('Paste code here if prompted >')).toBe(true)
+    expect(detectClaudeCodePrompt('Opening browser to sign in...')).toBe(false)
+  })
+
+  it('extracts the Claude authorization code from a callback URL and preserves bare codes', () => {
+    expect(
+      parseClaudeRedirectCode('https://platform.claude.com/oauth/code/callback?code=AUTH-CODE-123&state=STATE-456'),
+    ).toEqual({ code: 'AUTH-CODE-123', state: 'STATE-456', source: 'url' })
+    expect(parseClaudeRedirectCode('AUTH-CODE-123')).toEqual({ code: 'AUTH-CODE-123', source: 'bare' })
+    expect(parseClaudeRedirectCode('https://platform.claude.com/oauth/code/callback?state=STATE-456')).toBeUndefined()
   })
 
   it('extracts a Codex verification URL wrapped in an OSC 8 hyperlink', () => {

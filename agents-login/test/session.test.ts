@@ -111,11 +111,11 @@ describe('LoginSession state machine', () => {
     writeFileSync(join(home, '.claude.json'), '{"oauthAccount":{}}')
     const token = 'sk-ant-oat01-FullFlowToken1234567890_-abcXYZ'
 
-    const { deps: d } = deps(() => [
-      { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' },
+    const { deps: d, instances } = deps(() => [
+      { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\nPaste code here if prompted >' },
       {
         type: 'expectStdin',
-        match: (i) => i.includes('https://claude.ai/redirect'),
+        match: (i) => i === 'redirect-code-2\r',
         then: [
           { type: 'emit', data: `Login successful.\r\nYour OAuth token: ${token}\r\n` },
           { type: 'exit', code: 0 },
@@ -132,20 +132,73 @@ describe('LoginSession state machine', () => {
     expect(s.authorizeUrl).toContain('claude.ai/oauth/authorize')
     expect(s.needsRedirectUrl).toBe(true)
 
-    const sub = mgr.submitRedirectUrl(started.id, 'https://claude.ai/redirect?code=2')
+    const sub = mgr.submitRedirectUrl(
+      started.id,
+      'https://platform.claude.com/oauth/code/callback?code=redirect-code-2&state=redirect-state-2',
+    )
     expect(sub.ok).toBe(true)
 
     expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('succeeded')
+    expect(instances[0].writes).toEqual(['redirect-code-2\r'])
     expect(agentsApi.posts).toEqual([
       { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
     ])
+  })
+
+  it('waits for the Claude code prompt before writing the extracted authorization code', async () => {
+    const writes: string[] = []
+    const dataCbs: Array<(chunk: string) => void> = []
+    const exitCbs: Array<(info: { exitCode: number }) => void> = []
+    const proc = {
+      onData(cb: (chunk: string) => void) {
+        dataCbs.push(cb)
+      },
+      onExit(cb: (info: { exitCode: number }) => void) {
+        exitCbs.push(cb)
+      },
+      write(data: string) {
+        writes.push(data)
+      },
+      kill() {
+        // no-op
+      },
+    }
+    const mgr = new SessionManager({
+      spawner: () => proc,
+      agentsApi,
+      lease: new NoopLeaseLock(),
+      paths: { home, codexHome },
+      logger: createLogger(),
+      ttlMs: 60_000,
+    })
+    const started = mgr.start('claude', 'alice')
+    dataCbs.forEach((cb) => cb('Visit https://claude.com/cai/oauth/authorize?code=true&state=state-1\r\n'))
+    await tick()
+
+    const sub = mgr.submitRedirectUrl(
+      started.id,
+      'https://platform.claude.com/oauth/code/callback?code=queued-code-123&state=callback-state-456',
+    )
+    expect(sub.ok).toBe(true)
+    expect(writes).toEqual([])
+    expect(mgr.status(started.id)!.needsRedirectUrl).toBe(false)
+    expect(mgr.submitRedirectUrl(started.id, 'other-code').ok).toBe(false)
+
+    dataCbs.forEach((cb) => cb('Paste code here if prompted >'))
+    await tick()
+
+    expect(writes).toEqual(['queued-code-123\r'])
+    expect(exitCbs.length).toBe(1)
   })
 
   it('captures the setup-token OAuth token from stdout when no credentials file is written', async () => {
     // No .credentials.json is created — setup-token only prints the token.
     const token = 'sk-ant-oat01-StdoutOnlyToken1234567890_-abcXYZ'
     const { deps: d } = deps(() => [
-      { type: 'emit', data: 'Use the url below\r\nhttps://claude.com/cai/oauth/authorize?code=true\r\n' },
+      {
+        type: 'emit',
+        data: 'Use the url below\r\nhttps://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >',
+      },
       {
         type: 'expectStdin',
         match: () => true,
@@ -173,7 +226,7 @@ describe('LoginSession state machine', () => {
     // exit, so a CLI that printed the token and kept the PTY open never posted.
     const token = 'sk-ant-oat01-NoExitToken1234567890_-abcXYZ'
     const { deps: d } = deps(() => [
-      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
       {
         type: 'expectStdin',
         match: () => true,
@@ -195,7 +248,7 @@ describe('LoginSession state machine', () => {
   it('finalizes Claude from an OSC8-linked setup-token OAuth token after paste-back', async () => {
     const token = 'sk-ant-oat01-Osc8SessionToken1234567890_-abcXYZ'
     const { deps: d } = deps(() => [
-      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
       {
         type: 'expectStdin',
         match: () => true,
@@ -217,7 +270,7 @@ describe('LoginSession state machine', () => {
   it('finalizes Claude from .credentials.json when setup-token prints no token and stays open', async () => {
     const token = 'sk-ant-oat01-CredentialsFileToken1234567890_-abcXYZ'
     const { deps: d } = deps(() => [
-      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
       {
         type: 'expectStdin',
         match: () => true,
@@ -247,7 +300,7 @@ describe('LoginSession state machine', () => {
     const logs: LogEntry[] = []
     const { deps: d } = deps(
       () => [
-        { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+        { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
         {
           type: 'expectStdin',
           match: () => true,
@@ -274,7 +327,7 @@ describe('LoginSession state machine', () => {
 
   it('fails Claude after a bounded post-redirect timeout with redacted output context', async () => {
     const { deps: d } = deps(() => [
-      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\n' },
+      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
       {
         type: 'expectStdin',
         match: () => true,
@@ -326,8 +379,8 @@ describe('LoginSession state machine', () => {
   })
 
   it('rejects an empty authorization code but accepts a non-URL code', async () => {
-    const { deps: d } = deps(() => [
-      { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' },
+    const { deps: d, instances } = deps(() => [
+      { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\nPaste code here if prompted >' },
       { type: 'expectStdin', match: () => true, then: [] },
     ])
     const mgr = new SessionManager(d)
@@ -336,6 +389,7 @@ describe('LoginSession state machine', () => {
     expect(mgr.submitRedirectUrl(started.id, '   ').ok).toBe(false)
     // setup-token returns a bare code, not a URL — it must be accepted.
     expect(mgr.submitRedirectUrl(started.id, 'ABCD-1234-token').ok).toBe(true)
+    expect(instances[0].writes).toEqual(['ABCD-1234-token\r'])
   })
 
   it('rejects redirect submission for the codex provider', async () => {
@@ -430,10 +484,10 @@ describe('LoginSession state machine', () => {
     const failingAgentsApi = fakeAgentsApi(new Error('agents-api credential ingest failed: 503 unavailable'))
 
     const { spawner } = fakeSpawner(() => [
-      { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' },
+      { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\nPaste code here if prompted >' },
       {
         type: 'expectStdin',
-        match: () => true,
+        match: (i) => i === 'ingest-failure-code\r',
         then: [{ type: 'emit', data: 'Login successful.\r\nYour OAuth token: sk-ant-oat01-FailureToken1234567890\r\n' }],
       },
     ])
@@ -447,7 +501,7 @@ describe('LoginSession state machine', () => {
     })
     const started = mgr.start('claude', 'alice')
     await tick()
-    mgr.submitRedirectUrl(started.id, 'https://claude.ai/redirect')
+    mgr.submitRedirectUrl(started.id, 'https://platform.claude.com/oauth/code/callback?code=ingest-failure-code')
     expect(await waitPhase(mgr, started.id, ['failed', 'succeeded'])).toBe('failed')
     expect(mgr.status(started.id)!.error).toMatch(/agents-api credential ingest failed/)
   })

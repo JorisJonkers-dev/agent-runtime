@@ -68,6 +68,34 @@ export function parseClaude(buffer: string): ClaudeParse {
   return { authorizeUrl: m?.[1]?.trim() }
 }
 
+export function detectClaudeCodePrompt(buffer: string): boolean {
+  return /paste\s+code\s+here\s+if\s+prompted\s*>/i.test(stripAnsi(buffer))
+}
+
+export interface ClaudeRedirectCode {
+  code: string
+  state?: string
+  source: 'url' | 'bare'
+}
+
+export function parseClaudeRedirectCode(input: string): ClaudeRedirectCode | undefined {
+  const trimmed = input.trim()
+  if (trimmed.length === 0) {
+    return undefined
+  }
+  try {
+    const url = new URL(trimmed)
+    const code = url.searchParams.get('code')?.trim()
+    if (!code) {
+      return undefined
+    }
+    const state = url.searchParams.get('state')?.trim() || undefined
+    return { code, state, source: 'url' }
+  } catch {
+    return { code: trimmed, source: 'bare' }
+  }
+}
+
 // `claude setup-token`'s actual product is a long-lived OAuth token printed to
 // stdout ("Your OAuth token (valid for 1 year): sk-ant-oat01-…", meant for
 // CLAUDE_CODE_OAUTH_TOKEN). It is NOT persisted to a credentials file, so the

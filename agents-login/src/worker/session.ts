@@ -4,7 +4,15 @@ import { redactString } from '../shared/redact.js'
 import type { Provider, SessionPhase, SessionStatus } from '../shared/types.js'
 import { isTerminal } from '../shared/types.js'
 import { capture, readClaudeCredentialsToken, type CredentialPaths } from './credentials.js'
-import { detectFailure, detectSuccess, parseClaude, parseClaudeToken, parseCodex } from './parse.js'
+import {
+  detectClaudeCodePrompt,
+  detectFailure,
+  detectSuccess,
+  parseClaude,
+  parseClaudeRedirectCode,
+  parseClaudeToken,
+  parseCodex,
+} from './parse.js'
 import type { PtyProcess, PtySpawner } from './pty.js'
 import type { LeaseLock } from './lease.js'
 import { payloadForApi, providerForApi, type AgentsApiClient } from './agentsApiClient.js'
@@ -53,6 +61,7 @@ export class LoginSession {
   private redirectTimer?: NodeJS.Timeout
   private credentialProbeTimer?: NodeJS.Timeout
   private redirectSubmitted = false
+  private pendingClaudeCode?: string
   private updatedBy = 'unknown'
 
   constructor(
@@ -101,7 +110,8 @@ export class LoginSession {
       authorizeUrl: this.authorizeUrl,
       deviceCode: this.deviceCode,
       verificationUrl: this.verificationUrl,
-      needsRedirectUrl: this.provider === 'claude' && this.phase === 'awaiting_url' && !this.redirectSubmitted,
+      needsRedirectUrl:
+        this.provider === 'claude' && this.phase === 'awaiting_url' && !this.redirectSubmitted && !this.pendingClaudeCode,
       message: this.message,
       error: this.error,
       updatedAt: this.updatedAt,
@@ -198,6 +208,7 @@ export class LoginSession {
           )
         }
       }
+      this.maybeSubmitPendingClaudeCode()
     } else {
       if (!this.deviceCode || !this.verificationUrl) {
         const parsed = parseCodex(this.buffer)
@@ -230,6 +241,27 @@ export class LoginSession {
     }
   }
 
+  private maybeSubmitPendingClaudeCode(): void {
+    if (!this.pendingClaudeCode || this.redirectSubmitted || !this.proc || !detectClaudeCodePrompt(this.buffer)) {
+      return
+    }
+    const code = this.pendingClaudeCode
+    this.pendingClaudeCode = undefined
+    this.redirectSubmitted = true
+    this.deps.logger.info('Claude authorization code submitted to PTY', {
+      sessionId: this.id,
+      provider: this.provider,
+      codeBytes: code.length,
+    })
+    this.proc.write(`${code}\r`)
+    // Stay in awaiting_url so the success line emitted by the CLI after the
+    // paste-back still drives finalize(); only finalize() flips to finalizing.
+    this.message = 'Submitted the authorization code; completing login…'
+    this.touch()
+    this.startRedirectTimeout()
+    void this.probeClaudeCredentialFile('redirect submitted')
+  }
+
   private onExit(exitCode: number): void {
     if (isTerminal(this.phase) || this.phase === 'finalizing') {
       return
@@ -259,7 +291,7 @@ export class LoginSession {
     this.fail(`CLI exited with code ${exitCode} before login completed`)
   }
 
-  /** Claude only: feed the post-approval redirect URL to the child's stdin. */
+  /** Claude only: feed the post-approval authorization code to the child's stdin. */
   submitRedirectUrl(url: string): { ok: boolean; error?: string } {
     if (this.provider !== 'claude') {
       return { ok: false, error: 'redirect URL only applies to the Claude flow' }
@@ -267,28 +299,27 @@ export class LoginSession {
     if (this.phase !== 'awaiting_url') {
       return { ok: false, error: `session is not awaiting a redirect URL (phase=${this.phase})` }
     }
-    if (this.redirectSubmitted) {
+    if (this.redirectSubmitted || this.pendingClaudeCode) {
       return { ok: false, error: 'authorization code already submitted' }
     }
-    const trimmed = url.trim()
-    // setup-token expects the authorization code copied from the approval page
-    // (not a URL); accept any non-empty value and let the CLI validate it.
-    if (trimmed.length === 0) {
+    const parsed = parseClaudeRedirectCode(url)
+    if (!parsed) {
       return { ok: false, error: 'authorization code is required' }
     }
-    this.redirectSubmitted = true
     this.deps.logger.info('Claude redirect submission received', {
       sessionId: this.id,
       provider: this.provider,
-      inputBytes: trimmed.length,
+      inputBytes: url.trim().length,
+      codeBytes: parsed.code.length,
+      inputSource: parsed.source,
+      statePresent: parsed.state !== undefined,
     })
-    this.proc?.write(trimmed + '\r')
-    // Stay in awaiting_url so the success line emitted by the CLI after the
-    // paste-back still drives finalize(); only finalize() flips to finalizing.
-    this.message = 'Submitted the authorization code; completing login…'
+    this.pendingClaudeCode = parsed.code
+    this.message = detectClaudeCodePrompt(this.buffer)
+      ? 'Submitted the authorization code; completing login…'
+      : 'Authorization code received; waiting for Claude prompt…'
     this.touch()
-    this.startRedirectTimeout()
-    void this.probeClaudeCredentialFile('redirect submitted')
+    this.maybeSubmitPendingClaudeCode()
     return { ok: true }
   }
 

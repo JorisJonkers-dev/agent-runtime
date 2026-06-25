@@ -28,10 +28,10 @@ export function makeFakeCliEnv(): FakeCliEnv {
   const claude = `#!/usr/bin/env sh
 echo "Visit the following URL to authorize Claude Code:"
 echo "https://claude.ai/oauth/authorize?code=abc123&state=xyz"
-echo "Paste the redirect URL after approving:"
-# block on stdin for the redirect URL
-read REDIRECT
-echo "received: $REDIRECT" >/dev/null
+echo "Paste code here if prompted >"
+# block on stdin for the authorization code
+read CODE
+echo "received: $CODE" >/dev/null
 echo "Login successful. You are now logged in."
 mkdir -p "$HOME/.claude"
 printf '%s' '{"accessToken":"claude-secret-token","refreshToken":"r"}' > "$HOME/.claude/.credentials.json"
