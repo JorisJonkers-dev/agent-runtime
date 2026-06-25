@@ -42,6 +42,8 @@ function defaultCommand(provider: Provider): { file: string; args: string[] } {
 const MAX_BUFFER = 256 * 1024
 const DEFAULT_REDIRECT_TIMEOUT_MS = 60_000
 const CLAUDE_CREDENTIAL_POLL_MS = 250
+const CLAUDE_SUBMIT_ENTER_DELAY_MS = 120
+const CLAUDE_SUBMIT_RETRY_DELAY_MS = 3_000
 const LOG_LINE_LIMIT = 512
 const FAILURE_TAIL_LIMIT = 2_000
 
@@ -60,6 +62,8 @@ export class LoginSession {
   private timer?: NodeJS.Timeout
   private redirectTimer?: NodeJS.Timeout
   private credentialProbeTimer?: NodeJS.Timeout
+  private claudeSubmitEnterTimer?: NodeJS.Timeout
+  private claudeSubmitRetryTimer?: NodeJS.Timeout
   private redirectSubmitted = false
   private pendingClaudeCode?: string
   private updatedBy = 'unknown'
@@ -261,7 +265,8 @@ export class LoginSession {
       provider: this.provider,
       codeBytes: code.length,
     })
-    this.proc.write(`${code}\r`)
+    this.proc.write(code)
+    this.scheduleClaudeSubmitEnter()
     // Stay in awaiting_url so the success line emitted by the CLI after the
     // paste-back still drives finalize(); only finalize() flips to finalizing.
     this.message = 'Submitted the authorization code; completing login…'
@@ -343,6 +348,57 @@ export class LoginSession {
     return { ok: true }
   }
 
+  private scheduleClaudeSubmitEnter(): void {
+    this.clearClaudeSubmitTimers()
+    this.claudeSubmitEnterTimer = setTimeout(() => {
+      this.claudeSubmitEnterTimer = undefined
+      this.writeClaudeSubmitEnter('initial delayed Enter')
+      this.scheduleClaudeSubmitRetry()
+    }, CLAUDE_SUBMIT_ENTER_DELAY_MS)
+    if (typeof this.claudeSubmitEnterTimer.unref === 'function') {
+      this.claudeSubmitEnterTimer.unref()
+    }
+  }
+
+  private scheduleClaudeSubmitRetry(): void {
+    if (isTerminal(this.phase) || this.phase === 'finalizing') {
+      return
+    }
+    this.claudeSubmitRetryTimer = setTimeout(() => {
+      this.claudeSubmitRetryTimer = undefined
+      if (this.phase !== 'awaiting_url') {
+        return
+      }
+      this.writeClaudeSubmitEnter('retry Enter after delayed submit')
+    }, CLAUDE_SUBMIT_RETRY_DELAY_MS)
+    if (typeof this.claudeSubmitRetryTimer.unref === 'function') {
+      this.claudeSubmitRetryTimer.unref()
+    }
+  }
+
+  private writeClaudeSubmitEnter(reason: string): void {
+    if (!this.proc || !this.redirectSubmitted || isTerminal(this.phase) || this.phase === 'finalizing') {
+      return
+    }
+    this.deps.logger.info('Claude authorization code submit Enter written to PTY', {
+      sessionId: this.id,
+      provider: this.provider,
+      reason,
+    })
+    this.proc.write('\r')
+  }
+
+  private clearClaudeSubmitTimers(): void {
+    if (this.claudeSubmitEnterTimer) {
+      clearTimeout(this.claudeSubmitEnterTimer)
+      this.claudeSubmitEnterTimer = undefined
+    }
+    if (this.claudeSubmitRetryTimer) {
+      clearTimeout(this.claudeSubmitRetryTimer)
+      this.claudeSubmitRetryTimer = undefined
+    }
+  }
+
   private startRedirectTimeout(): void {
     const timeoutMs = this.deps.redirectTimeoutMs ?? DEFAULT_REDIRECT_TIMEOUT_MS
     if (this.redirectTimer) {
@@ -415,6 +471,7 @@ export class LoginSession {
       clearTimeout(this.credentialProbeTimer)
       this.credentialProbeTimer = undefined
     }
+    this.clearClaudeSubmitTimers()
   }
 
   private async finalize(updatedBy: string, claudeTokenOverride?: string, reason = 'completion detected'): Promise<void> {

@@ -13,6 +13,17 @@ async function tick(times = 8): Promise<void> {
   }
 }
 
+async function waitForWrites(writes: () => string[], count: number, timeoutMs = 500): Promise<string[]> {
+  const start = Date.now()
+  for (;;) {
+    const current = writes()
+    if (current.length >= count || Date.now() - start > timeoutMs) {
+      return current
+    }
+    await new Promise((r) => setTimeout(r, 10))
+  }
+}
+
 interface PostedCredential {
   userId: string
   provider: 'CLAUDE' | 'CODEX'
@@ -115,10 +126,16 @@ describe('LoginSession state machine', () => {
       { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\nPaste code here if prompted >' },
       {
         type: 'expectStdin',
-        match: (i) => i === 'redirect-code-2\r',
+        match: (i) => i === 'redirect-code-2',
         then: [
-          { type: 'emit', data: `Login successful.\r\nYour OAuth token: ${token}\r\n` },
-          { type: 'exit', code: 0 },
+          {
+            type: 'expectStdin',
+            match: (i) => i === '\r',
+            then: [
+              { type: 'emit', data: `Login successful.\r\nYour OAuth token: ${token}\r\n` },
+              { type: 'exit', code: 0 },
+            ],
+          },
         ],
       },
     ])
@@ -139,7 +156,36 @@ describe('LoginSession state machine', () => {
     expect(sub.ok).toBe(true)
 
     expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('succeeded')
-    expect(instances[0].writes).toEqual(['redirect-code-2\r'])
+    expect(instances[0].writes).toEqual(['redirect-code-2', '\r'])
+    expect(agentsApi.posts).toEqual([
+      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
+    ])
+  })
+
+  it('writes the Claude authorization code and submit Enter as distinct PTY writes before finalizing', async () => {
+    const token = 'sk-ant-oat01-SeparateEnterToken1234567890_-abcXYZ'
+    const { deps: d, instances } = deps(() => [
+      { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
+      {
+        type: 'expectStdin',
+        match: (i) => i === 'bulk-paste-sensitive-code',
+        then: [
+          {
+            type: 'expectStdin',
+            match: (i) => i === '\r',
+            then: [{ type: 'emit', data: `Your OAuth token: ${token}\r\n` }],
+          },
+        ],
+      },
+    ])
+    const mgr = new SessionManager(d)
+    const started = mgr.start('claude', 'alice')
+    await tick()
+
+    expect(mgr.submitRedirectUrl(started.id, 'bulk-paste-sensitive-code').ok).toBe(true)
+
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 1000)).toBe('succeeded')
+    expect(instances[0].writes).toEqual(['bulk-paste-sensitive-code', '\r'])
     expect(agentsApi.posts).toEqual([
       { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
     ])
@@ -185,10 +231,11 @@ describe('LoginSession state machine', () => {
     expect(mgr.submitRedirectUrl(started.id, 'other-code').ok).toBe(false)
 
     dataCbs.forEach((cb) => cb('Paste code here if prompted >'))
-    await tick()
+    await waitForWrites(() => writes, 2)
 
-    expect(writes).toEqual(['queued-code-123\r'])
+    expect(writes).toEqual(['queued-code-123', '\r'])
     expect(exitCbs.length).toBe(1)
+    expect(mgr.cancel(started.id).ok).toBe(true)
   })
 
   it('writes Claude authorization codes to the live PTY and fails if the handle is missing', async () => {
@@ -203,7 +250,8 @@ describe('LoginSession state machine', () => {
     expect(
       live.submitRedirectUrl('https://platform.claude.com/oauth/code/callback?code=live-code-123&state=state-1').ok,
     ).toBe(true)
-    expect(instances[0].writes).toEqual(['live-code-123\r'])
+    expect(await waitForWrites(() => instances[0].writes, 2)).toEqual(['live-code-123', '\r'])
+    live.cancel()
 
     const logs: LogEntry[] = []
     const { deps: missingDeps } = deps(
@@ -425,7 +473,8 @@ describe('LoginSession state machine', () => {
     expect(mgr.submitRedirectUrl(started.id, '   ').ok).toBe(false)
     // setup-token returns a bare code, not a URL — it must be accepted.
     expect(mgr.submitRedirectUrl(started.id, 'ABCD-1234-token').ok).toBe(true)
-    expect(instances[0].writes).toEqual(['ABCD-1234-token\r'])
+    expect(await waitForWrites(() => instances[0].writes, 2)).toEqual(['ABCD-1234-token', '\r'])
+    expect(mgr.cancel(started.id).ok).toBe(true)
   })
 
   it('rejects redirect submission for the codex provider', async () => {
@@ -523,8 +572,16 @@ describe('LoginSession state machine', () => {
       { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\nPaste code here if prompted >' },
       {
         type: 'expectStdin',
-        match: (i) => i === 'ingest-failure-code\r',
-        then: [{ type: 'emit', data: 'Login successful.\r\nYour OAuth token: sk-ant-oat01-FailureToken1234567890\r\n' }],
+        match: (i) => i === 'ingest-failure-code',
+        then: [
+          {
+            type: 'expectStdin',
+            match: (i) => i === '\r',
+            then: [
+              { type: 'emit', data: 'Login successful.\r\nYour OAuth token: sk-ant-oat01-FailureToken1234567890\r\n' },
+            ],
+          },
+        ],
       },
     ])
     const mgr = new SessionManager({
