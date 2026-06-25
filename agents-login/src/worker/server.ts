@@ -3,15 +3,13 @@ import type { Logger } from '../shared/log.js'
 import type { Provider, SessionStatus } from '../shared/types.js'
 import { redactString } from '../shared/redact.js'
 import type { SessionManager } from './session.js'
-import type { VaultClient } from './vaultClient.js'
+import type { AgentsApiClient } from './agentsApiClient.js'
 
 export interface WorkerServerDeps {
   sessions: SessionManager
   internalToken: string
   logger: Logger
-  // The stored-credential check reads non-secret bookkeeping from these paths.
-  vault: Pick<VaultClient, 'readStatus'>
-  vaultPaths: { claude: string; codex: string }
+  agentsApi: Pick<AgentsApiClient, 'storedStatus'>
 }
 
 function isProvider(v: unknown): v is Provider {
@@ -19,7 +17,7 @@ function isProvider(v: unknown): v is Provider {
 }
 
 // The status payload never carries a captured credential — those go straight to
-// Vault. authorizeUrl / verificationUrl / deviceCode are exactly what the UI
+// agents-api. authorizeUrl / verificationUrl / deviceCode are exactly what the UI
 // must show the operator, and the OAuth `state` + PKCE `code_challenge` are long
 // base64url strings the generic token redactor would otherwise mask, breaking
 // the URL the operator has to open. Only the free-text message/error fields
@@ -63,14 +61,11 @@ export function buildWorkerServer(deps: WorkerServerDeps): FastifyInstance {
 
   app.get('/healthz', async () => ({ ok: true }))
 
-  // The credential-status check: what is currently stored in Vault for each
-  // provider (version + when/who last refreshed), so the UI can confirm a login
-  // landed without exposing any secret material.
+  // There is no read-side agents-api credential endpoint. Report only a local
+  // placeholder so the UI can remain explicit that stored state is unknown.
   app.get('/status', async () => {
-    const [claude, codex] = await Promise.all([
-      deps.vault.readStatus(deps.vaultPaths.claude),
-      deps.vault.readStatus(deps.vaultPaths.codex),
-    ])
+    const claude = deps.agentsApi.storedStatus()
+    const codex = deps.agentsApi.storedStatus()
     return { claude, codex }
   })
 

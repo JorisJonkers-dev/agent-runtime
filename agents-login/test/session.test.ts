@@ -4,10 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SessionManager, type SessionDeps } from '../src/worker/session.js'
 import { NoopLeaseLock } from '../src/worker/lease.js'
-import { VaultClient } from '../src/worker/vaultClient.js'
 import { createLogger } from '../src/shared/log.js'
 import { fakeSpawner, type Action } from './helpers/fakePty.js'
-import { FakeVault } from './helpers/fakeVault.js'
 
 async function tick(times = 8): Promise<void> {
   for (let i = 0; i < times; i += 1) {
@@ -15,8 +13,27 @@ async function tick(times = 8): Promise<void> {
   }
 }
 
+interface PostedCredential {
+  userId: string
+  provider: 'CLAUDE' | 'CODEX'
+  payload: Record<string, string>
+}
+
+function fakeAgentsApi(fail?: Error): { postCredentials: (req: PostedCredential) => Promise<void>; posts: PostedCredential[] } {
+  const posts: PostedCredential[] = []
+  return {
+    posts,
+    async postCredentials(req: PostedCredential) {
+      if (fail) {
+        throw fail
+      }
+      posts.push(req)
+    },
+  }
+}
+
 // Poll until the session reaches one of the expected phases (handles the async
-// finalize that awaits credential capture + the lease + the Vault round-trip).
+// finalize that awaits credential capture + the lease + the agents-api POST).
 async function waitPhase(
   mgr: { status: (id?: string) => { phase: string } | undefined },
   id: string,
@@ -37,34 +54,18 @@ describe('LoginSession state machine', () => {
   let root: string
   let home: string
   let codexHome: string
-  let vault: FakeVault
-  let vaultClient: VaultClient
+  let agentsApi: ReturnType<typeof fakeAgentsApi>
 
-  beforeEach(async () => {
+  beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'sess-'))
     home = join(root, 'home')
     codexHome = join(home, '.codex')
     mkdirSync(join(home, '.claude'), { recursive: true })
     mkdirSync(codexHome, { recursive: true })
-    vault = new FakeVault()
-    await vault.start()
-    vaultClient = new VaultClient(
-      {
-        addr: vault.url,
-        k8sRole: 'r',
-        k8sMount: 'kubernetes',
-        kvMount: 'secret',
-        saTokenPath: '/x',
-        maxCasRetries: 3,
-      },
-      fetch,
-      async () => 'jwt',
-    )
-    await vaultClient.login()
+    agentsApi = fakeAgentsApi()
   })
 
-  afterEach(async () => {
-    await vault.stop()
+  afterEach(() => {
     rmSync(root, { recursive: true, force: true })
   })
 
@@ -79,10 +80,9 @@ describe('LoginSession state machine', () => {
     return {
       deps: {
         spawner,
-        vault: vaultClient,
+        agentsApi,
         lease,
         paths: { home, codexHome },
-        vaultPaths: { claude: 'agents/claude-oauth', codex: 'agents/codex-oauth' },
         logger: createLogger(),
         ttlMs: 60_000,
       },
@@ -90,9 +90,10 @@ describe('LoginSession state machine', () => {
     }
   }
 
-  it('drives the full Claude flow: authorize URL → redirect paste-back → success → Vault write', async () => {
+  it('drives the full Claude flow: authorize URL → redirect paste-back → success → agents-api POST', async () => {
     writeFileSync(join(home, '.claude', '.credentials.json'), '{"accessToken":"secret"}')
     writeFileSync(join(home, '.claude.json'), '{"oauthAccount":{}}')
+    const token = 'sk-ant-oat01-FullFlowToken1234567890_-abcXYZ'
 
     const { deps: d } = deps(() => [
       { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' },
@@ -100,7 +101,7 @@ describe('LoginSession state machine', () => {
         type: 'expectStdin',
         match: (i) => i.includes('https://claude.ai/redirect'),
         then: [
-          { type: 'emit', data: 'Login successful.\r\n' },
+          { type: 'emit', data: `Login successful.\r\nYour OAuth token: ${token}\r\n` },
           { type: 'exit', code: 0 },
         ],
       },
@@ -119,8 +120,9 @@ describe('LoginSession state machine', () => {
     expect(sub.ok).toBe(true)
 
     expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('succeeded')
-    expect(vault.store.get('agents/claude-oauth')?.data['claude_json']).toBe('{"oauthAccount":{}}')
-    expect(vault.store.get('agents/claude-oauth')?.data.updated_by).toBe('alice')
+    expect(agentsApi.posts).toEqual([
+      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
+    ])
   })
 
   it('captures the setup-token OAuth token from stdout when no credentials file is written', async () => {
@@ -145,8 +147,9 @@ describe('LoginSession state machine', () => {
     await tick()
     expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
     expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('succeeded')
-    expect(vault.store.get('agents/claude-oauth')?.data['oauth_token']).toBe(token)
-    expect(vault.store.get('agents/claude-oauth')?.data['credentials_json']).toBeUndefined()
+    expect(agentsApi.posts).toEqual([
+      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
+    ])
   })
 
   it('drives the Codex device flow with no paste-back', async () => {
@@ -161,7 +164,9 @@ describe('LoginSession state machine', () => {
     const mgr = new SessionManager(d)
     const started = mgr.start('codex', 'bob')
     expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('succeeded')
-    expect(vault.store.get('agents/codex-oauth')?.data['auth_json']).toBe('{"tokens":{}}')
+    expect(agentsApi.posts).toEqual([
+      { userId: 'bob', provider: 'CODEX', payload: { auth_json: '{"tokens":{}}', config_toml: 'model="x"\n' } },
+    ])
   })
 
   it('surfaces the device code before success', async () => {
@@ -277,29 +282,24 @@ describe('LoginSession state machine', () => {
     expect(instances.length).toBe(1)
   })
 
-  it('surfaces a persistent Vault CAS conflict as a failed session', async () => {
+  it('surfaces an agents-api ingest failure as a failed session', async () => {
     writeFileSync(join(home, '.claude', '.credentials.json'), '{}')
     writeFileSync(join(home, '.claude.json'), '{}')
-    await vault.stop()
-    vault = new FakeVault({ conflictCount: 99 })
-    await vault.start()
-    const conflictClient = new VaultClient(
-      { addr: vault.url, k8sRole: 'r', k8sMount: 'kubernetes', kvMount: 'secret', saTokenPath: '/x', maxCasRetries: 2 },
-      fetch,
-      async () => 'jwt',
-    )
-    await conflictClient.login()
+    const failingAgentsApi = fakeAgentsApi(new Error('agents-api credential ingest failed: 503 unavailable'))
 
     const { spawner } = fakeSpawner(() => [
       { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' },
-      { type: 'expectStdin', match: () => true, then: [{ type: 'emit', data: 'Login successful.\r\n' }] },
+      {
+        type: 'expectStdin',
+        match: () => true,
+        then: [{ type: 'emit', data: 'Login successful.\r\nYour OAuth token: sk-ant-oat01-FailureToken1234567890\r\n' }],
+      },
     ])
     const mgr = new SessionManager({
       spawner,
-      vault: conflictClient,
+      agentsApi: failingAgentsApi,
       lease: new NoopLeaseLock(),
       paths: { home, codexHome },
-      vaultPaths: { claude: 'agents/claude-oauth', codex: 'agents/codex-oauth' },
       logger: createLogger(),
       ttlMs: 60_000,
     })
@@ -307,7 +307,7 @@ describe('LoginSession state machine', () => {
     await tick()
     mgr.submitRedirectUrl(started.id, 'https://claude.ai/redirect')
     expect(await waitPhase(mgr, started.id, ['failed', 'succeeded'])).toBe('failed')
-    expect(mgr.status(started.id)!.error).toMatch(/conflict/i)
+    expect(mgr.status(started.id)!.error).toMatch(/agents-api credential ingest failed/)
   })
 
   it('returns undefined status for an unknown id', () => {

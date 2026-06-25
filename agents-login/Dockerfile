@@ -1,5 +1,5 @@
 # The credential-login worker: drives the Claude Code and Codex CLIs over a PTY
-# to capture OAuth credentials into Vault. Both CLIs are baked into the image.
+# to capture OAuth credentials and hand them to agents-api. Both CLIs are baked into the image.
 # The browser-facing half of the portal lives in agents-ui / agents-api.
 
 # ---- build stage ----------------------------------------------------------

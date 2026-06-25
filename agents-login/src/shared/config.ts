@@ -35,17 +35,12 @@ export interface WorkerConfig {
   internalToken: string
   home: string
   codexHome: string
-  vaultAddr: string
-  vaultK8sRole: string
-  vaultK8sMount: string
-  vaultKvMount: string
-  vaultClaudePath: string
-  vaultCodexPath: string
+  agentsApiInternalUrl: string
+  agentsApiInternalBearer: string
   saTokenPath: string
   leaseName: string
   leaseNamespace: string
   sessionTtlMs: number
-  casMaxRetries: number
 }
 
 export function loadWorkerConfig(): WorkerConfig {
@@ -56,16 +51,11 @@ export function loadWorkerConfig(): WorkerConfig {
     internalToken: env('INTERNAL_TOKEN'),
     home,
     codexHome: optEnv('CODEX_HOME', join(home, '.codex')),
-    vaultAddr: optEnv('VAULT_ADDR', 'http://vault.data-system.svc.cluster.local:8200'),
-    vaultK8sRole: env('VAULT_K8S_ROLE', 'agents-login-worker'),
-    vaultK8sMount: optEnv('VAULT_K8S_MOUNT', 'kubernetes'),
-    vaultKvMount: optEnv('VAULT_KV_MOUNT', 'secret'),
-    vaultClaudePath: optEnv('VAULT_CLAUDE_PATH', 'agents/claude-oauth'),
-    vaultCodexPath: optEnv('VAULT_CODEX_PATH', 'agents/codex-oauth'),
-    saTokenPath: optEnv('VAULT_SA_TOKEN_PATH', '/var/run/secrets/kubernetes.io/serviceaccount/token'),
+    agentsApiInternalUrl: optEnv('AGENTS_API_INTERNAL_URL', 'http://agents-api.agents-system.svc.cluster.local:8082'),
+    agentsApiInternalBearer: env('AGENTS_API_INTERNAL_BEARER'),
+    saTokenPath: optEnv('SA_TOKEN_PATH', '/var/run/secrets/kubernetes.io/serviceaccount/token'),
     leaseName: optEnv('LEASE_NAME', 'agents-login-write'),
     leaseNamespace: optEnv('LEASE_NAMESPACE', 'agents-system'),
     sessionTtlMs: intEnv('SESSION_TTL_MS', 15 * 60 * 1000),
-    casMaxRetries: intEnv('VAULT_CAS_MAX_RETRIES', 5),
   }
 }

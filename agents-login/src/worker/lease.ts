@@ -1,4 +1,4 @@
-// Named-lock abstraction backing the Vault write critical section. The real
+// Named-lock abstraction backing the credential ingest critical section. The real
 // implementation acquires/renews a coordination.k8s.io Lease via the Kubernetes
 // API; tests inject a fake.
 

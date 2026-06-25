@@ -9,28 +9,19 @@ function manager() {
     { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\n' },
     { type: 'expectStdin', match: () => true, then: [] },
   ])
-  // vault/lease are never reached in these route tests (no success emitted).
+  // agentsApi/lease are never reached in these route tests (no success emitted).
   return new SessionManager({
     spawner,
-    vault: {} as never,
+    agentsApi: {} as never,
     lease: {} as never,
     paths: { home: '/tmp', codexHome: '/tmp/.codex' },
-    vaultPaths: { claude: 'agents/claude-oauth', codex: 'agents/codex-oauth' },
     logger: createLogger(),
     ttlMs: 60_000,
   })
 }
 
 const TOKEN = 'internal-secret'
-const VAULT_PATHS = { claude: 'agents/claude-oauth', codex: 'agents/codex-oauth' }
-
-function fakeVault(
-  overrides: Record<string, { exists: boolean; version: number; updatedAt?: string; updatedBy?: string }> = {},
-) {
-  return {
-    readStatus: async (path: string) => overrides[path] ?? { exists: false, version: 0 },
-  }
-}
+const fakeAgentsApi = { storedStatus: () => ({ status: 'unknown' as const }) }
 
 describe('worker HTTP server', () => {
   let app: ReturnType<typeof buildWorkerServer>
@@ -40,8 +31,7 @@ describe('worker HTTP server', () => {
       sessions: manager(),
       internalToken: TOKEN,
       logger: createLogger(),
-      vault: fakeVault(),
-      vaultPaths: VAULT_PATHS,
+      agentsApi: fakeAgentsApi,
     })
   })
 
@@ -125,27 +115,19 @@ describe('worker HTTP server', () => {
     expect(res.json().ok).toBe(true)
   })
 
-  it('reports per-provider stored-credential status (no secrets)', async () => {
+  it('reports local unknown stored-credential status (no secrets)', async () => {
     const sessions = manager()
     const local = buildWorkerServer({
       sessions,
       internalToken: TOKEN,
       logger: createLogger(),
-      vault: fakeVault({
-        'agents/claude-oauth': { exists: true, version: 3, updatedAt: '2026-06-23T10:00:00Z', updatedBy: 'ExtraToast' },
-      }),
-      vaultPaths: VAULT_PATHS,
+      agentsApi: fakeAgentsApi,
     })
     const res = await local.inject({ method: 'GET', url: '/status', headers: { 'x-internal-token': TOKEN } })
     expect(res.statusCode).toBe(200)
     const body = res.json()
-    expect(body.claude).toEqual({
-      exists: true,
-      version: 3,
-      updatedAt: '2026-06-23T10:00:00Z',
-      updatedBy: 'ExtraToast',
-    })
-    expect(body.codex).toEqual({ exists: false, version: 0 })
+    expect(body.claude).toEqual({ status: 'unknown' })
+    expect(body.codex).toEqual({ status: 'unknown' })
   })
 
   it('requires the internal token for /status', async () => {
@@ -169,10 +151,9 @@ describe('worker HTTP server', () => {
     ])
     const sessions = new SessionManager({
       spawner,
-      vault: {} as never,
+      agentsApi: {} as never,
       lease: {} as never,
       paths: { home: '/tmp', codexHome: '/tmp/.codex' },
-      vaultPaths: { claude: 'agents/claude-oauth', codex: 'agents/codex-oauth' },
       logger: createLogger(),
       ttlMs: 60_000,
     })
@@ -180,8 +161,7 @@ describe('worker HTTP server', () => {
       sessions,
       internalToken: TOKEN,
       logger: createLogger(),
-      vault: fakeVault(),
-      vaultPaths: VAULT_PATHS,
+      agentsApi: fakeAgentsApi,
     })
     const headers = { 'x-internal-token': TOKEN }
     const start = await local.inject({ method: 'POST', url: '/sessions', headers, payload: { provider: 'claude' } })

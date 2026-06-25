@@ -6,14 +6,13 @@ import { capture, type CredentialPaths } from './credentials.js'
 import { detectFailure, detectSuccess, parseClaude, parseClaudeToken, parseCodex } from './parse.js'
 import type { PtyProcess, PtySpawner } from './pty.js'
 import type { LeaseLock } from './lease.js'
-import { CasConflictError, type VaultClient } from './vaultClient.js'
+import { payloadForApi, providerForApi, type AgentsApiClient } from './agentsApiClient.js'
 
 export interface SessionDeps {
   spawner: PtySpawner
-  vault: VaultClient
+  agentsApi: Pick<AgentsApiClient, 'postCredentials'>
   lease: LeaseLock
   paths: CredentialPaths
-  vaultPaths: { claude: string; codex: string }
   logger: Logger
   ttlMs: number
   now?: () => Date
@@ -224,20 +223,17 @@ export class LoginSession {
       // prints to stdout, not a file; parse it from the accumulated buffer.
       const claudeToken = this.provider === 'claude' ? parseClaudeToken(this.buffer) : undefined
       const bundle = await capture(this.provider, this.deps.paths, updatedBy, this.now, claudeToken)
-      const path = this.provider === 'claude' ? this.deps.vaultPaths.claude : this.deps.vaultPaths.codex
+      const provider = providerForApi(this.provider)
+      const payload = payloadForApi(this.provider, bundle)
       await this.deps.lease.withLock(async () => {
-        await this.deps.vault.writeCas(path, bundle.data)
+        await this.deps.agentsApi.postCredentials({ userId: updatedBy, provider, payload })
       })
       this.clearTimer()
       this.proc?.kill()
-      this.setPhase('succeeded', 'Credentials written to Vault.')
+      this.setPhase('succeeded', 'Credentials written.')
       this.deps.logger.info('login session succeeded', { sessionId: this.id, provider: this.provider })
     } catch (err) {
-      if (err instanceof CasConflictError) {
-        this.fail(`Vault write conflict — another writer is active. ${err.message}`)
-      } else {
-        this.fail(err instanceof Error ? err.message : 'failed to finalize login')
-      }
+      this.fail(err instanceof Error ? err.message : 'failed to finalize login')
     }
   }
 
@@ -262,8 +258,8 @@ export class LoginSession {
 
 /**
  * Holds at most one active session per provider. Claude and Codex run their
- * CLIs against separate HOME subtrees (`.claude` vs `CODEX_HOME`) and the Vault
- * write is serialized by the Lease, so the two providers can log in
+ * CLIs against separate HOME subtrees (`.claude` vs `CODEX_HOME`) and the
+ * ingest write is serialized by the Lease, so the two providers can log in
  * concurrently; a second start for a provider whose session is still live
  * re-attaches to it rather than spawning a duplicate.
  */

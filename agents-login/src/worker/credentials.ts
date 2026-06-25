@@ -10,7 +10,7 @@ export interface CredentialPaths {
 }
 
 export interface CredentialBundle {
-  // Vault KV v2 path-relative field map plus metadata.
+  // Captured provider fields plus local bookkeeping used before ingest.
   data: Record<string, string>
 }
 
@@ -52,9 +52,6 @@ export async function captureClaude(
   if (!oauthToken && credentials === undefined) {
     throw new Error('no Claude credential captured: setup-token printed no token and no .credentials.json was written')
   }
-  // Vault KV v2 field keys are underscored; the VaultStaticSecret templates
-  // re-emit the consumer-facing shape (CLAUDE_CODE_OAUTH_TOKEN env + the
-  // dot-named files) into the projected Secret.
   const data: Record<string, string> = {
     schema_version: SCHEMA_VERSION,
     updated_at: now().toISOString(),

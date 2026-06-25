@@ -2,7 +2,7 @@ import { runWorker } from './worker/index.js'
 
 // The credential-login worker: the only process this image runs. It owns the
 // PTY that drives `claude /login` / `codex login --device`, captures the
-// credential files, and writes them to Vault under a Lease + CAS. The browser
+// credential files, and posts them to agents-api under a Lease. The browser
 // UI and its auth live in agents-ui / agents-api, which proxy to this worker
 // over the internal token.
 runWorker().catch((err) => {

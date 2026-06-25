@@ -8,7 +8,7 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'text-summary'],
       include: ['src/**/*.ts'],
-      // Entrypoints wire real Vault / node-pty / network and are exercised via
+      // Entrypoints wire node-pty / network and are exercised via
       // their composed units; they hold no branching logic worth gating on.
       exclude: ['src/index.ts', 'src/**/index.ts', 'src/worker/pty.ts'],
       thresholds: {

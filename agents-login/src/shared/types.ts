@@ -10,8 +10,8 @@ export type Provider = 'claude' | 'codex'
  *  awaiting_device — Codex only: device code emitted, operator approves in the
  *                 browser; no paste-back needed
  *  finalizing   — login accepted by the CLI, capturing + writing credentials
- *  succeeded    — credentials written to Vault
- *  failed       — error (parse failure, child crash, persistent CAS conflict…)
+ *  succeeded    — credentials posted to agents-api
+ *  failed       — error (parse failure, child crash, ingest failure…)
  *  cancelled    — operator cancelled or session timed out
  */
 export type SessionPhase =
