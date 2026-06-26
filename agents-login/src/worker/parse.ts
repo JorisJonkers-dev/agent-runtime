@@ -77,12 +77,17 @@ export function detectClaudeCodePrompt(buffer: string): boolean {
   return /paste\s*code\s*here\s*if\s*prompted\s*>/i.test(stripAnsi(buffer))
 }
 
+// The TUI draws these prompts with ANSI cursor-column moves (e.g. ESC[10G)
+// instead of spaces; stripAnsi() removes those, FUSING the words with no
+// whitespace ("Selectloginmethod", "Claudeaccountwithsubscription",
+// "Run/login"). Match with \s* (zero-or-more), never \s+, so detection works
+// against both the spaced and the fused forms.
 export function detectClaudeLoggedOutRepl(buffer: string): boolean {
-  return /(?:run\s+\/login|\?\s*for\s*shortcuts|welcome\s+back)/i.test(stripAnsi(buffer))
+  return /(?:run\s*\/login|\?\s*for\s*shortcuts|welcome\s*back)/i.test(stripAnsi(buffer))
 }
 
 export function detectClaudeLoginChooser(buffer: string): boolean {
-  return /(?:select\s+login\s+method|claude\s+account\s+with\s+subscription)/i.test(stripAnsi(buffer))
+  return /(?:select\s*login\s*method|claude\s*account\s*with\s*subscription)/i.test(stripAnsi(buffer))
 }
 
 export interface ClaudeRedirectCode {

@@ -68,12 +68,20 @@ describe('PTY output parsing', () => {
     expect(detectClaudeLoggedOutRepl('Not logged in · Run /login')).toBe(true)
     expect(detectClaudeLoggedOutRepl('\x1b[2GWelcome back\r\n? for shortcuts')).toBe(true)
     expect(detectClaudeLoggedOutRepl('Paste code here if prompted >')).toBe(false)
+    // The real REPL uses ANSI cursor-column moves, not spaces: after stripAnsi
+    // the words fuse ("Run/login", "?forshortcuts"). Must still detect.
+    expect(detectClaudeLoggedOutRepl('Not\x1b[377Glogged\x1b[384Gin\x1b[387G·\x1b[389GRun\x1b[393G/login')).toBe(true)
   })
 
   it('detects the Claude login-method chooser', () => {
     expect(detectClaudeLoginChooser('Select login method')).toBe(true)
     expect(detectClaudeLoginChooser('\x1b[36mClaude account with subscription\x1b[0m')).toBe(true)
     expect(detectClaudeLoginChooser('Not logged in · Run /login')).toBe(false)
+    // Real chooser output: ANSI cursor-column moves fuse the words to
+    // "Selectloginmethod"/"Claudeaccountwithsubscription" after stripAnsi.
+    // This regressed login (no Enter sent) until the detectors used \s* not \s+.
+    expect(detectClaudeLoginChooser('\x1b[3GSelect\x1b[10Glogin\x1b[16Gmethod:')).toBe(true)
+    expect(detectClaudeLoginChooser('\x1b[8G\x1b[97mClaude\x1b[15Gaccount\x1b[23Gwith\x1b[28Gsubscription')).toBe(true)
   })
 
   it('extracts the Claude authorization code from a callback URL and preserves bare codes', () => {
