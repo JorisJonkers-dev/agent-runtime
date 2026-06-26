@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Logger } from '../shared/log.js'
 import { redactString } from '../shared/redact.js'
@@ -8,6 +8,8 @@ import { isTerminal } from '../shared/types.js'
 import { capture, readClaudeCredentialsJson, type CredentialPaths } from './credentials.js'
 import {
   detectClaudeCodePrompt,
+  detectClaudeLoggedOutRepl,
+  detectClaudeLoginChooser,
   detectFailure,
   detectSuccess,
   parseClaude,
@@ -41,8 +43,8 @@ const DEFAULT_REDIRECT_TIMEOUT_MS = 60_000
 const CLAUDE_CREDENTIAL_POLL_MS = 250
 const CLAUDE_SUBMIT_ENTER_DELAY_MS = 120
 const CLAUDE_SUBMIT_RETRY_DELAY_MS = 3_000
-const CLAUDE_ONBOARDING_ENTER_INTERVAL_MS = 1_500
-const CLAUDE_ONBOARDING_ENTER_MAX_SENDS = 6
+const CLAUDE_ONBOARDING_ENTER_INTERVAL_MS = 1_000
+const CLAUDE_ONBOARDING_ENTER_MAX_SENDS = 10
 const LOG_LINE_LIMIT = 512
 const FAILURE_TAIL_LIMIT = 2_000
 const CLAUDE_ONBOARDING_SEED = {
@@ -71,6 +73,9 @@ export class LoginSession {
   private claudeSubmitRetryTimer?: NodeJS.Timeout
   private claudeOnboardingEnterTimer?: NodeJS.Timeout
   private claudeOnboardingEnterCount = 0
+  private claudeLoggedOutReplDetected = false
+  private claudeLoginCommandSent = false
+  private claudeChooserConfirmed = false
   private redirectSubmitted = false
   private pendingClaudeCode?: string
   private updatedBy = 'unknown'
@@ -178,15 +183,19 @@ export class LoginSession {
 
   private prepareClaudeLoginHome(): string {
     mkdirSync(this.deps.paths.home, { recursive: true })
-    mkdirSync(join(this.deps.paths.home, '.claude'), { recursive: true })
     const dotClaudePath = join(this.deps.paths.home, '.claude.json')
-    if (!existsSync(dotClaudePath)) {
-      writeFileSync(dotClaudePath, JSON.stringify(CLAUDE_ONBOARDING_SEED))
-      this.deps.logger.info('Claude login onboarding seed written', {
-        sessionId: this.id,
-        path: '$HOME/.claude.json',
-      })
-    }
+    rmSync(join(this.deps.paths.home, '.claude'), { recursive: true, force: true })
+    rmSync(dotClaudePath, { force: true })
+    mkdirSync(join(this.deps.paths.home, '.claude'), { recursive: true })
+    this.deps.logger.info('Claude login home cleaned', {
+      sessionId: this.id,
+      removed: ['$HOME/.claude', '$HOME/.claude.json'],
+    })
+    writeFileSync(dotClaudePath, JSON.stringify(CLAUDE_ONBOARDING_SEED))
+    this.deps.logger.info('Claude login onboarding seed written', {
+      sessionId: this.id,
+      path: '$HOME/.claude.json',
+    })
     const managedSettingsPath = join(this.deps.paths.home, 'managed-settings.json')
     writeFileSync(managedSettingsPath, JSON.stringify(CLAUDE_MANAGED_SETTINGS))
     this.deps.logger.info('Claude login managed settings written', {
@@ -233,6 +242,7 @@ export class LoginSession {
       this.phase !== 'starting' ||
       this.authorizeUrl ||
       !this.proc ||
+      this.claudeLoginCommandSent ||
       this.claudeOnboardingEnterTimer
     ) {
       return
@@ -256,7 +266,13 @@ export class LoginSession {
   }
 
   private writeClaudeOnboardingEnter(): void {
-    if (this.provider !== 'claude' || this.phase !== 'starting' || this.authorizeUrl || !this.proc) {
+    if (
+      this.provider !== 'claude' ||
+      this.phase !== 'starting' ||
+      this.authorizeUrl ||
+      !this.proc ||
+      this.claudeLoginCommandSent
+    ) {
       return
     }
     const parsed = parseClaude(this.buffer).authorizeUrl
@@ -278,6 +294,41 @@ export class LoginSession {
     })
     this.proc.write('\r')
     this.scheduleClaudeOnboardingEnter()
+  }
+
+  private handleClaudeLoginNavigation(): void {
+    if (this.provider !== 'claude' || this.phase !== 'starting' || this.authorizeUrl || !this.proc) {
+      return
+    }
+    if (detectClaudeLoginChooser(this.buffer) && !this.claudeChooserConfirmed) {
+      this.claudeChooserConfirmed = true
+      this.clearClaudeOnboardingNavigation()
+      this.deps.logger.info('Claude login method chooser confirmed', {
+        sessionId: this.id,
+        provider: this.provider,
+      })
+      this.proc.write('\r')
+      return
+    }
+    if (detectClaudeLoggedOutRepl(this.buffer)) {
+      if (!this.claudeLoggedOutReplDetected) {
+        this.claudeLoggedOutReplDetected = true
+        this.deps.logger.info('Claude logged-out REPL detected', {
+          sessionId: this.id,
+          provider: this.provider,
+        })
+      }
+      if (!this.claudeLoginCommandSent) {
+        this.claudeLoginCommandSent = true
+        this.clearClaudeOnboardingNavigation()
+        this.deps.logger.info('Claude /login command written to PTY', {
+          sessionId: this.id,
+          provider: this.provider,
+        })
+        this.proc.write('/login\r')
+      }
+      return
+    }
   }
 
   private clearClaudeOnboardingNavigation(): void {
@@ -321,6 +372,7 @@ export class LoginSession {
           this.clearClaudeOnboardingNavigation()
         }
       }
+      this.handleClaudeLoginNavigation()
       this.maybeSubmitPendingClaudeCode()
     } else {
       if (!this.deviceCode || !this.verificationUrl) {

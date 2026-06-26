@@ -5,6 +5,8 @@ import {
   parseClaudeToken,
   parseCodex,
   detectClaudeCodePrompt,
+  detectClaudeLoggedOutRepl,
+  detectClaudeLoginChooser,
   detectSuccess,
   detectFailure,
   stripAnsi,
@@ -60,6 +62,18 @@ describe('PTY output parsing', () => {
     expect(detectClaudeCodePrompt('\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>')).toBe(true)
     expect(detectClaudeCodePrompt('Paste code here if prompted >')).toBe(true)
     expect(detectClaudeCodePrompt('Opening browser to sign in...')).toBe(false)
+  })
+
+  it('detects Claude logged-out REPL prompts', () => {
+    expect(detectClaudeLoggedOutRepl('Not logged in · Run /login')).toBe(true)
+    expect(detectClaudeLoggedOutRepl('\x1b[2GWelcome back\r\n? for shortcuts')).toBe(true)
+    expect(detectClaudeLoggedOutRepl('Paste code here if prompted >')).toBe(false)
+  })
+
+  it('detects the Claude login-method chooser', () => {
+    expect(detectClaudeLoginChooser('Select login method')).toBe(true)
+    expect(detectClaudeLoginChooser('\x1b[36mClaude account with subscription\x1b[0m')).toBe(true)
+    expect(detectClaudeLoginChooser('Not logged in · Run /login')).toBe(false)
   })
 
   it('extracts the Claude authorization code from a callback URL and preserves bare codes', () => {

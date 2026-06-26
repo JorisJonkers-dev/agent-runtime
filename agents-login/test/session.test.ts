@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LoginSession, SessionManager, type SessionDeps } from '../src/worker/session.js'
@@ -204,7 +204,7 @@ describe('LoginSession state machine', () => {
         JSON.stringify({ forceLoginMethod: 'claudeai' }),
       )
 
-      await vi.advanceTimersByTimeAsync(1_500)
+      await vi.advanceTimersByTimeAsync(1_000)
       await Promise.resolve()
       await Promise.resolve()
 
@@ -218,18 +218,130 @@ describe('LoginSession state machine', () => {
     }
   })
 
-  it('does not clobber an existing Claude account file when seeding onboarding', async () => {
-    const existing = '{"oauthAccount":{"emailAddress":"keep@example.com"}}'
-    writeFileSync(join(home, '.claude.json'), existing)
+  it('cleans stale Claude login home before seeding onboarding', async () => {
+    writeFileSync(join(home, '.claude', '.credentials.json'), '{"stale":true}')
+    writeFileSync(join(home, '.claude.json'), '{"oauthAccount":{"emailAddress":"stale@example.com"}}')
     const { deps: d } = deps(() => [])
     const mgr = new SessionManager(d)
     const started = mgr.start('claude', 'alice')
 
-    expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe(existing)
+    expect(existsSync(join(home, '.claude', '.credentials.json'))).toBe(false)
+    expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe(
+      JSON.stringify({
+        theme: 'dark',
+        hasCompletedOnboarding: true,
+        bypassPermissionsModeAccepted: true,
+      }),
+    )
     expect(readFileSync(join(home, 'managed-settings.json'), 'utf8')).toBe(
       JSON.stringify({ forceLoginMethod: 'claudeai' }),
     )
     mgr.cancel(started.id)
+  })
+
+  it('sends /login once when Claude lands in the logged-out REPL', async () => {
+    vi.useFakeTimers()
+    try {
+      const logs: LogEntry[] = []
+      const writes: string[] = []
+      const dataCbs: Array<(chunk: string) => void> = []
+      const proc = {
+        onData(cb: (chunk: string) => void) {
+          dataCbs.push(cb)
+        },
+        onExit(_cb: (info: { exitCode: number }) => void) {
+          // no-op
+        },
+        write(data: string) {
+          writes.push(data)
+        },
+        kill() {
+          // no-op
+        },
+      }
+      const mgr = new SessionManager({
+        spawner: () => proc,
+        agentsApi,
+        lease: new NoopLeaseLock(),
+        paths: { home, codexHome },
+        logger: memoryLogger(logs),
+        ttlMs: 60_000,
+      })
+      const started = mgr.start('claude', 'alice')
+
+      dataCbs.forEach((cb) => cb('Welcome back\r\nNot logged in · Run /login\r\n? for shortcuts\r\n'))
+      expect(writes).toEqual(['/login\r'])
+      expect(logs.some((entry) => entry.msg === 'Claude logged-out REPL detected')).toBe(true)
+      expect(logs.some((entry) => entry.msg === 'Claude /login command written to PTY')).toBe(true)
+
+      dataCbs.forEach((cb) =>
+        cb(
+          "Browser didn't open? Use the url below to sign in\r\n" +
+            'https://claude.com/cai/oauth/authorize?code=true&state=idle-repl\r\n' +
+            'Paste code here if prompted >',
+        ),
+      )
+      expect(mgr.status(started.id)!.phase).toBe('awaiting_url')
+      expect(mgr.status(started.id)!.authorizeUrl).toContain('state=idle-repl')
+
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(writes).toEqual(['/login\r'])
+      mgr.cancel(started.id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('confirms the Claude login-method chooser with one Enter', async () => {
+    vi.useFakeTimers()
+    try {
+      const logs: LogEntry[] = []
+      const writes: string[] = []
+      const dataCbs: Array<(chunk: string) => void> = []
+      const proc = {
+        onData(cb: (chunk: string) => void) {
+          dataCbs.push(cb)
+        },
+        onExit(_cb: (info: { exitCode: number }) => void) {
+          // no-op
+        },
+        write(data: string) {
+          writes.push(data)
+        },
+        kill() {
+          // no-op
+        },
+      }
+      const mgr = new SessionManager({
+        spawner: () => proc,
+        agentsApi,
+        lease: new NoopLeaseLock(),
+        paths: { home, codexHome },
+        logger: memoryLogger(logs),
+        ttlMs: 60_000,
+      })
+      const started = mgr.start('claude', 'alice')
+
+      dataCbs.forEach((cb) => cb('Select login method\r\nClaude account with subscription\r\n'))
+      expect(writes).toEqual(['\r'])
+      expect(logs.some((entry) => entry.msg === 'Claude login method chooser confirmed')).toBe(true)
+
+      dataCbs.forEach((cb) =>
+        cb(
+          "Browser didn't open? Use the url below to sign in\r\n" +
+            'https://claude.com/cai/oauth/authorize?code=true&state=chooser\r\n' +
+            'Paste code here if prompted >',
+        ),
+      )
+      expect(mgr.status(started.id)!.phase).toBe('awaiting_url')
+      expect(mgr.status(started.id)!.authorizeUrl).toContain('state=chooser')
+
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(writes).toEqual(['\r'])
+      mgr.cancel(started.id)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('drives the full Claude flow: authorize URL → redirect paste-back → success → agents-api POST', async () => {

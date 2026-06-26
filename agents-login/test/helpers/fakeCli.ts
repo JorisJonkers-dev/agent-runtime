@@ -33,7 +33,21 @@ fi
 echo "Choose the look for Claude Code"
 echo "Dark mode"
 read THEME
-echo "Login method pre-selected: Subscription Plan (Claude Pro/Max)"
+echo "Welcome back"
+echo "Not logged in · Run /login"
+echo "? for shortcuts"
+read LOGIN
+if [ "$LOGIN" != "/login" ]; then
+  echo "error: expected /login, got $LOGIN"
+  exit 1
+fi
+echo "Select login method"
+echo "Claude account with subscription"
+read METHOD
+if [ -n "$METHOD" ]; then
+  echo "error: expected default login-method Enter"
+  exit 1
+fi
 echo "Browser didn't open? Use the url below to sign in"
 echo "https://claude.com/cai/oauth/authorize?code=true&scope=user%3Aprofile%20user%3Ainference%20user%3Asessions%3Aclaude_code&state=xyz"
 echo "Paste code here if prompted >"

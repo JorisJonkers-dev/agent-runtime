@@ -77,6 +77,14 @@ export function detectClaudeCodePrompt(buffer: string): boolean {
   return /paste\s*code\s*here\s*if\s*prompted\s*>/i.test(stripAnsi(buffer))
 }
 
+export function detectClaudeLoggedOutRepl(buffer: string): boolean {
+  return /(?:run\s+\/login|\?\s*for\s*shortcuts|welcome\s+back)/i.test(stripAnsi(buffer))
+}
+
+export function detectClaudeLoginChooser(buffer: string): boolean {
+  return /(?:select\s+login\s+method|claude\s+account\s+with\s+subscription)/i.test(stripAnsi(buffer))
+}
+
 export interface ClaudeRedirectCode {
   code: string
   state?: string
