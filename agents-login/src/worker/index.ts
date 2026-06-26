@@ -1,6 +1,6 @@
 import { createLogger } from '../shared/log.js'
 import { loadWorkerConfig } from '../shared/config.js'
-import { K8sLeaseLock } from './lease.js'
+import { NoopLeaseLock } from './lease.js'
 import { createNodePtySpawner } from './pty.js'
 import { buildWorkerServer } from './server.js'
 import { SessionManager } from './session.js'
@@ -16,12 +16,14 @@ export async function runWorker(): Promise<void> {
     logger,
   })
 
-  const lease = new K8sLeaseLock({
-    name: cfg.leaseName,
-    namespace: cfg.leaseNamespace,
-    holderIdentity: `${process.env.HOSTNAME ?? 'agents-login-worker'}-${process.pid}`,
-    saTokenPath: cfg.saTokenPath,
-  })
+  // Credentials are persisted by agents-api as a per-(user, provider) Postgres
+  // upsert, and this worker runs as a single replica with at most one session
+  // per provider, so concurrent writers cannot collide. The previous
+  // coordination.k8s.io lease only served the old Vault CAS write; it reached
+  // the kube-apiserver over HTTPS without the cluster CA, so finalize threw
+  // "fetch failed" before the captured token was ever posted. No distributed
+  // lock is needed now.
+  const lease = new NoopLeaseLock()
 
   const spawner = await createNodePtySpawner(logger)
 
