@@ -43,7 +43,12 @@ check_agent_kit_manifests() {
 }
 
 prepare_injected_credentials() {
-  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  if [ -n "${AGENT_CLAUDE_CREDENTIALS_FILE:-}" ] && [ -f "$AGENT_CLAUDE_CREDENTIALS_FILE" ]; then
+    mkdir -p "$CLAUDE_CONFIG_DIR"
+    chmod 0700 "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
+    cp "$AGENT_CLAUDE_CREDENTIALS_FILE" "$CLAUDE_CONFIG_DIR/.credentials.json"
+    chmod 0600 "$CLAUDE_CONFIG_DIR/.credentials.json"
+  elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     mkdir -p "$CLAUDE_CONFIG_DIR"
     chmod 0700 "$CLAUDE_CONFIG_DIR" 2>/dev/null || true
     claude_credentials_tmp=$(mktemp)
@@ -346,6 +351,17 @@ if jq --arg ws "$WORKSPACE_ROOT" '
 else
   rm -f "$claude_tmp"
 fi
+if [ -n "${AGENT_CLAUDE_ACCOUNT_FILE:-}" ] && [ -f "$AGENT_CLAUDE_ACCOUNT_FILE" ] &&
+   jq -e 'type == "object"' "$AGENT_CLAUDE_ACCOUNT_FILE" >/dev/null 2>&1; then
+  claude_account_tmp=$(mktemp)
+  if jq --argjson account "$(cat "$AGENT_CLAUDE_ACCOUNT_FILE")" '
+        (.oauthAccount = $account)
+      ' "$HOME/.claude.json" > "$claude_account_tmp"; then
+    mv "$claude_account_tmp" "$HOME/.claude.json"
+  else
+    rm -f "$claude_account_tmp"
+  fi
+fi
 
 # Register MCP servers into Claude Code from the declarative ConfigMap
 # (agents-mcp-servers, mounted at /etc/agent-mcp). The selected profile
@@ -566,6 +582,8 @@ if [ -n "${REPO_URLS:-}" ]; then
 fi
 
 speckit_seed_workspace
+
+unset CLAUDE_CODE_OAUTH_TOKEN
 
 # The gateway shares this Pod's memory cgroup with the agent CLIs it
 # launches (Claude Code, Codex) and whatever the workspace itself runs.
