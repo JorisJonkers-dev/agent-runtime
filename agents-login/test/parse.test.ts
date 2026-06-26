@@ -57,9 +57,7 @@ describe('PTY output parsing', () => {
   })
 
   it('detects the Claude setup-token code prompt', () => {
-    expect(detectClaudeCodePrompt('\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>')).toBe(
-      true,
-    )
+    expect(detectClaudeCodePrompt('\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>')).toBe(true)
     expect(detectClaudeCodePrompt('Paste code here if prompted >')).toBe(true)
     expect(detectClaudeCodePrompt('Opening browser to sign in...')).toBe(false)
   })
@@ -89,6 +87,20 @@ describe('PTY output parsing', () => {
 
   it('parses a device code without a separator word', () => {
     expect(parseCodex('code: AB12CD').deviceCode).toBe('AB12CD')
+  })
+
+  it('parses the Codex 0.141 --device-auth output (one-time code on the next line)', () => {
+    const buf = [
+      'Follow these steps to sign in with ChatGPT using device code authorization:',
+      '1. Open this link in your browser and sign in to your account',
+      '   https://auth.openai.com/codex/device',
+      '2. Enter this one-time code (expires in 15 minutes)',
+      '   8PGY-109RY',
+      'Device codes are a common phishing target. Never share this code.',
+    ].join('\r\n')
+    const parsed = parseCodex(buf)
+    expect(parsed.verificationUrl).toBe('https://auth.openai.com/codex/device')
+    expect(parsed.deviceCode).toBe('8PGY-109RY')
   })
 
   it('detects per-provider success lines', () => {

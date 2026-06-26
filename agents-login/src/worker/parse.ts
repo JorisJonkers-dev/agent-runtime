@@ -45,10 +45,15 @@ export function oscHyperlinkTargets(raw: string): string[] {
 const CLAUDE_URL_PATTERN =
   /(https:\/\/(?:claude\.ai|claude\.com|platform\.claude\.com|console\.anthropic\.com)\/[^\s"'<>`]+)/i
 
-// Codex device login prints a verification URL and a user code.
+// Codex device login prints a verification URL and a one-time code. Newer
+// Codex (`login --device-auth`, 0.141.x) prints "Enter this one-time code
+// (expires in 15 minutes)" with the code on the *next* line, so the keyword and
+// the code are no longer adjacent; allow prose/newlines between them. The
+// digit lookahead keeps the match off pure-word tokens like "expires" that the
+// case-insensitive class would otherwise accept.
 const CODEX_URL_PATTERN = /(https:\/\/[^\s"'<>`]*(?:openai\.com|chatgpt\.com)[^\s"'<>`]*)/i
 const DEVICE_CODE_PATTERN =
-  /(?:user\s*code|device\s*code|enter\s*the\s*code|code:)\s*:?\s*([A-Z0-9]{4,}(?:-[A-Z0-9]{4,})?)/i
+  /(?:one[-\s]?time\s*code|user\s*code|device\s*code|enter\s*the\s*code|code:)[\s\S]{0,80}?(?=[A-Z0-9-]*[0-9])([A-Z0-9]{4,}(?:-[A-Z0-9]{4,})*)/i
 
 export interface ClaudeParse {
   authorizeUrl?: string

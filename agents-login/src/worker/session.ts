@@ -36,7 +36,7 @@ function defaultCommand(provider: Provider): { file: string; args: string[] } {
   // authorize URL and takes a pasted code back, writing the standard credentials.
   return provider === 'claude'
     ? { file: 'claude', args: ['setup-token'] }
-    : { file: 'codex', args: ['login', '--device'] }
+    : { file: 'codex', args: ['login', '--device-auth'] }
 }
 
 const MAX_BUFFER = 256 * 1024
@@ -115,7 +115,10 @@ export class LoginSession {
       deviceCode: this.deviceCode,
       verificationUrl: this.verificationUrl,
       needsRedirectUrl:
-        this.provider === 'claude' && this.phase === 'awaiting_url' && !this.redirectSubmitted && !this.pendingClaudeCode,
+        this.provider === 'claude' &&
+        this.phase === 'awaiting_url' &&
+        !this.redirectSubmitted &&
+        !this.pendingClaudeCode,
       message: this.message,
       error: this.error,
       updatedAt: this.updatedAt,
@@ -223,14 +226,23 @@ export class LoginSession {
           this.verificationUrl = parsed.verificationUrl
         }
         if (this.deviceCode && this.phase === 'starting') {
-          this.setPhase('awaiting_device', 'Enter the device code at the verification URL.', 'Codex device code detected')
+          this.setPhase(
+            'awaiting_device',
+            'Enter the device code at the verification URL.',
+            'Codex device code detected',
+          )
         }
       }
     }
 
-    const claudeTokenCaptured = this.provider === 'claude' && this.redirectSubmitted ? parseClaudeToken(this.buffer) : undefined
+    const claudeTokenCaptured =
+      this.provider === 'claude' && this.redirectSubmitted ? parseClaudeToken(this.buffer) : undefined
     if (this.provider === 'claude' && this.redirectSubmitted) {
-      this.logClaudeTokenParseAttempt('pty-output', claudeTokenCaptured !== undefined, 'PTY output received after redirect')
+      this.logClaudeTokenParseAttempt(
+        'pty-output',
+        claudeTokenCaptured !== undefined,
+        'PTY output received after redirect',
+      )
     }
     if (claudeTokenCaptured) {
       void this.finalize(updatedBy, claudeTokenCaptured, 'Claude OAuth token parsed from PTY output')
@@ -408,7 +420,9 @@ export class LoginSession {
       if (isTerminal(this.phase) || this.phase === 'finalizing') {
         return
       }
-      this.fail(`timed out waiting for Claude credential capture after redirect submission; output_tail=${this.outputTail()}`)
+      this.fail(
+        `timed out waiting for Claude credential capture after redirect submission; output_tail=${this.outputTail()}`,
+      )
     }, timeoutMs)
     if (typeof this.redirectTimer.unref === 'function') {
       this.redirectTimer.unref()
@@ -417,7 +431,12 @@ export class LoginSession {
   }
 
   private scheduleClaudeCredentialProbe(delayMs: number): void {
-    if (this.provider !== 'claude' || !this.redirectSubmitted || isTerminal(this.phase) || this.phase === 'finalizing') {
+    if (
+      this.provider !== 'claude' ||
+      !this.redirectSubmitted ||
+      isTerminal(this.phase) ||
+      this.phase === 'finalizing'
+    ) {
       return
     }
     if (this.credentialProbeTimer) {
@@ -433,7 +452,12 @@ export class LoginSession {
   }
 
   private async probeClaudeCredentialFile(reason: string): Promise<void> {
-    if (this.provider !== 'claude' || !this.redirectSubmitted || isTerminal(this.phase) || this.phase === 'finalizing') {
+    if (
+      this.provider !== 'claude' ||
+      !this.redirectSubmitted ||
+      isTerminal(this.phase) ||
+      this.phase === 'finalizing'
+    ) {
       return
     }
     try {
@@ -474,7 +498,11 @@ export class LoginSession {
     this.clearClaudeSubmitTimers()
   }
 
-  private async finalize(updatedBy: string, claudeTokenOverride?: string, reason = 'completion detected'): Promise<void> {
+  private async finalize(
+    updatedBy: string,
+    claudeTokenOverride?: string,
+    reason = 'completion detected',
+  ): Promise<void> {
     if (this.phase === 'finalizing' || isTerminal(this.phase)) {
       return
     }
@@ -482,7 +510,8 @@ export class LoginSession {
     try {
       // For Claude the canonical credential is the OAuth token setup-token
       // prints to stdout, not a file; parse it from the accumulated buffer.
-      const claudeToken = this.provider === 'claude' ? (claudeTokenOverride ?? parseClaudeToken(this.buffer)) : undefined
+      const claudeToken =
+        this.provider === 'claude' ? (claudeTokenOverride ?? parseClaudeToken(this.buffer)) : undefined
       this.deps.logger.info('login session finalize starting', {
         sessionId: this.id,
         provider: this.provider,
