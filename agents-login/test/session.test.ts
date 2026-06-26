@@ -145,8 +145,9 @@ describe('LoginSession state machine', () => {
   ): {
     deps: SessionDeps
     instances: ReturnType<typeof fakeSpawner>['instances']
+    spawns: ReturnType<typeof fakeSpawner>['spawns']
   } {
-    const { spawner, instances } = fakeSpawner(scriptFor)
+    const { spawner, instances, spawns } = fakeSpawner(scriptFor)
     return {
       deps: {
         spawner,
@@ -157,8 +158,21 @@ describe('LoginSession state machine', () => {
         ttlMs: 60_000,
       },
       instances,
+      spawns,
     }
   }
+
+  it('spawns the Claude login PTY wide enough that the authorize URL + state never wraps', () => {
+    // The subscription authorize URL is ~450 chars (scopes + code_challenge +
+    // state). A narrow PTY wraps it and the `&state=...` tail is dropped, so
+    // claude.ai rejects the URL with "Missing state parameter". Guard the width.
+    const { deps: d, spawns } = deps(() => [{ type: 'emit', data: '' }])
+    const mgr = new SessionManager(d)
+    mgr.start('claude', 'alice')
+    const claudeSpawn = spawns.find((s) => s.file === 'claude')
+    expect(claudeSpawn).toBeDefined()
+    expect(claudeSpawn!.options.cols ?? 0).toBeGreaterThanOrEqual(1000)
+  })
 
   it('seeds Claude subscription login settings and drives bounded onboarding Enter-through', async () => {
     vi.useFakeTimers()

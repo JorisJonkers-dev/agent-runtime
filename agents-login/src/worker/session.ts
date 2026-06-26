@@ -165,9 +165,14 @@ export class LoginSession {
     this.proc = this.deps.spawner(cmd.file, cmd.args, {
       cwd: this.deps.paths.home,
       env,
-      // Wide enough that the ~350-char authorize URL is emitted on one line;
-      // the default 80 cols wraps it and breaks URL extraction.
-      cols: 400,
+      // Wide enough that the authorize URL is emitted on ONE line. If the URL
+      // wraps, the `&state=...` tail lands on the next line and the parser's
+      // [^\s]+ stops at the break — the captured URL then lacks `state` and
+      // claude.ai rejects it ("Missing state parameter"). The Claude subscription
+      // authorize URL is ~450 chars (client_id + redirect_uri + the full scope
+      // set + code_challenge + state); 400 cols was too narrow and dropped state.
+      // 2000 leaves ample headroom.
+      cols: 2000,
       rows: 50,
     })
     this.proc.onData((chunk) => this.onData(chunk, updatedBy))

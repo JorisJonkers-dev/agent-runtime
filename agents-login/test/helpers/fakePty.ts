@@ -1,4 +1,4 @@
-import type { PtyProcess, PtySpawner } from '../../src/worker/pty.js'
+import type { PtyProcess, PtySpawner, PtySpawnOptions } from '../../src/worker/pty.js'
 
 /**
  * Fake PTY whose script is a list of programmed actions: emit output, or wait
@@ -69,13 +69,16 @@ export class FakePty implements PtyProcess {
 export function fakeSpawner(scriptFor: (file: string, args: string[]) => Action[]): {
   spawner: PtySpawner
   instances: FakePty[]
+  spawns: Array<{ file: string; args: string[]; options: PtySpawnOptions }>
 } {
   const instances: FakePty[] = []
-  const spawner: PtySpawner = (file, args) => {
+  const spawns: Array<{ file: string; args: string[]; options: PtySpawnOptions }> = []
+  const spawner: PtySpawner = (file, args, options) => {
+    spawns.push({ file, args, options })
     const pty = new FakePty(scriptFor(file, args))
     instances.push(pty)
     pty.run()
     return pty
   }
-  return { spawner, instances }
+  return { spawner, instances, spawns }
 }
