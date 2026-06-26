@@ -26,7 +26,7 @@ describe('PTY output parsing', () => {
     expect(parseClaude(buf).authorizeUrl).toBe('https://console.anthropic.com/oauth/authorize?x=1')
   })
 
-  it('matches the claude.com host that setup-token emits', () => {
+  it('matches the claude.com host that Claude OAuth emits', () => {
     const buf = 'Use the url below to sign in\r\nhttps://claude.com/oauth/authorize?code=true&client_id=x&state=y\r\n'
     expect(parseClaude(buf).authorizeUrl).toBe('https://claude.com/oauth/authorize?code=true&client_id=x&state=y')
   })
@@ -36,7 +36,7 @@ describe('PTY output parsing', () => {
   })
 
   it('extracts the clean target from an OSC 8 hyperlink, not the fused display copy', () => {
-    // `claude setup-token` prints the authorize URL as an OSC 8 hyperlink
+    // Claude can print the authorize URL as an OSC 8 hyperlink
     // (ESC ] 8 ; id ; URL BEL <visible copy> ESC ] 8 ; ; BEL). The framing
     // bytes used to be dropped as stray control chars, fusing the real URL to
     // the visible copy and corrupting the `state` param -> claude.com
@@ -56,7 +56,7 @@ describe('PTY output parsing', () => {
     expect(parseClaude(raw).authorizeUrl).toBe(url)
   })
 
-  it('detects the Claude setup-token code prompt', () => {
+  it('detects the Claude manual-flow code prompt', () => {
     expect(detectClaudeCodePrompt('\x1b[2GPaste\x1b[8Gcode\x1b[13Ghere\x1b[18Gif\x1b[21Gprompted\x1b[30G>')).toBe(true)
     expect(detectClaudeCodePrompt('Paste code here if prompted >')).toBe(true)
     expect(detectClaudeCodePrompt('Opening browser to sign in...')).toBe(false)
@@ -105,11 +105,12 @@ describe('PTY output parsing', () => {
 
   it('detects per-provider success lines', () => {
     expect(detectSuccess('claude', 'Login successful. You are now logged in.')).toBe(true)
+    expect(detectSuccess('claude', 'Logged in as alice@example.com')).toBe(true)
     expect(detectSuccess('codex', 'Successfully logged in.')).toBe(true)
     expect(detectSuccess('claude', 'still working')).toBe(false)
   })
 
-  it('parses the setup-token OAuth token from stdout, bounded by whitespace', () => {
+  it('parses a legacy Claude OAuth token from stdout, bounded by whitespace', () => {
     const token = 'sk-ant-oat01-Dx3Q7rrCNsYQi3h2HLUKZK4-KDiCJ_XCKEcSYx0X3H-O0'
     const buf =
       `\x1b[32m✓\x1b[0m Long-lived authentication token created successfully!\r\n` +
@@ -117,12 +118,12 @@ describe('PTY output parsing', () => {
     expect(parseClaudeToken(buf)).toBe(token)
   })
 
-  it('parses a bare setup-token OAuth token line', () => {
+  it('parses a bare legacy Claude OAuth token line', () => {
     const token = 'sk-ant-oat01-BareLineToken1234567890_-abcXYZ'
     expect(parseClaudeToken(`${token}\r\n`)).toBe(token)
   })
 
-  it('parses the setup-token OAuth token from an OSC 8 hyperlink target', () => {
+  it('parses a legacy Claude OAuth token from an OSC 8 hyperlink target', () => {
     const token = 'sk-ant-oat01-Osc8TokenTarget1234567890_-abcXYZ'
     const raw = `Your OAuth token: \x1b]8;;${token}\x07open token\x1b]8;;\x07\r\n`
     expect(parseClaudeToken(raw)).toBe(token)

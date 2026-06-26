@@ -8,6 +8,7 @@ import type { PtyProcess, PtySpawner } from '../../src/worker/pty.js'
  */
 export type Action =
   | { type: 'emit'; data: string }
+  | { type: 'effect'; run: () => void }
   | { type: 'expectStdin'; match: (input: string) => boolean; then: Action[] }
   | { type: 'exit'; code: number }
 
@@ -30,6 +31,8 @@ export class FakePty implements PtyProcess {
       const a = actions[i]
       if (a.type === 'emit') {
         this.dataCbs.forEach((cb) => cb(a.data))
+      } else if (a.type === 'effect') {
+        a.run()
       } else if (a.type === 'exit') {
         this.exitCbs.forEach((cb) => cb({ exitCode: a.code }))
         return

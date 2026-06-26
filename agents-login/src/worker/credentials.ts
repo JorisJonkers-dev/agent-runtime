@@ -27,27 +27,68 @@ async function readUtf8OrUndefined(path: string): Promise<string | undefined> {
   }
 }
 
-export async function readClaudeCredentialsToken(paths: CredentialPaths): Promise<string | undefined> {
-  const credentials = await readUtf8OrUndefined(join(paths.home, '.claude', '.credentials.json'))
-  return credentials === undefined ? undefined : parseClaudeToken(credentials)
+export async function readClaudeCredentialsJson(paths: CredentialPaths): Promise<string | undefined> {
+  return readUtf8OrUndefined(join(paths.home, '.claude', '.credentials.json'))
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined
+}
+
+function findStringField(value: unknown, fieldNames: Set<string>): string | undefined {
+  const record = objectRecord(value)
+  if (!record) {
+    return undefined
+  }
+  for (const [key, fieldValue] of Object.entries(record)) {
+    if (fieldNames.has(key) && typeof fieldValue === 'string' && fieldValue.length > 0) {
+      return fieldValue
+    }
+  }
+  for (const fieldValue of Object.values(record)) {
+    const nested = findStringField(fieldValue, fieldNames)
+    if (nested) {
+      return nested
+    }
+  }
+  return undefined
+}
+
+export function extractClaudeOauthToken(credentialsJson: string): string | undefined {
+  const tokenFromRaw = parseClaudeToken(credentialsJson)
+  if (tokenFromRaw) {
+    return tokenFromRaw
+  }
+  try {
+    return findStringField(JSON.parse(credentialsJson), new Set(['accessToken', 'oauth_token']))
+  } catch {
+    return undefined
+  }
+}
+
+function extractClaudeAccountJson(dotClaudeJson: string): string | undefined {
+  const parsed = objectRecord(JSON.parse(dotClaudeJson))
+  if (!parsed || parsed.oauthAccount === undefined) {
+    return undefined
+  }
+  return JSON.stringify(parsed.oauthAccount)
 }
 
 /**
- * Capture the Claude credential from a completed `setup-token` run.
+ * Capture the Claude credential from a completed subscription login.
  *
- * `setup-token`'s product is a long-lived OAuth token printed to stdout (for
- * CLAUDE_CODE_OAUTH_TOKEN); it does NOT write a credentials file. The token is
- * therefore the canonical credential and is parsed from the PTY output by the
- * caller. The interactive `claude login` flow instead leaves
+ * The interactive `claude` first-run login writes
  * `$HOME/.claude/.credentials.json` and `$HOME/.claude.json` (a SIBLING of
- * .claude/), so those are captured opportunistically when present. Capture
- * fails only when neither a token nor a credentials file is available.
+ * .claude/). The full subscription credential is the canonical artifact; a
+ * parsed token is kept only as an optional back-compat payload field.
  */
 export async function captureClaude(
   paths: CredentialPaths,
   updatedBy: string,
   now: () => Date = () => new Date(),
-  oauthToken?: string,
+  _oauthToken?: string,
 ): Promise<CredentialBundle> {
   const credsPath = join(paths.home, '.claude', '.credentials.json')
   const dotClaudePath = join(paths.home, '.claude.json')
@@ -55,10 +96,10 @@ export async function captureClaude(
     readUtf8OrUndefined(credsPath),
     readUtf8OrUndefined(dotClaudePath),
   ])
-  if (!oauthToken && credentials === undefined) {
-    throw new Error('no Claude credential captured: setup-token printed no token and no .credentials.json was written')
+  if (credentials === undefined) {
+    throw new Error('no Claude credential captured: .credentials.json was not written')
   }
-  const capturedToken = oauthToken ?? (credentials === undefined ? undefined : parseClaudeToken(credentials))
+  const capturedToken = extractClaudeOauthToken(credentials)
   const data: Record<string, string> = {
     schema_version: SCHEMA_VERSION,
     updated_at: now().toISOString(),
@@ -72,6 +113,10 @@ export async function captureClaude(
   }
   if (dotClaude !== undefined) {
     data.claude_json = dotClaude
+    const accountJson = extractClaudeAccountJson(dotClaude)
+    if (accountJson !== undefined) {
+      data.account_json = accountJson
+    }
   }
   return { data }
 }

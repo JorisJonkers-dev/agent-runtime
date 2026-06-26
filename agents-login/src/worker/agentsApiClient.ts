@@ -1,7 +1,7 @@
 import type { Provider } from '../shared/types.js'
 import type { Logger } from '../shared/log.js'
 import { redactString } from '../shared/redact.js'
-import type { CredentialBundle } from './credentials.js'
+import { extractClaudeOauthToken, type CredentialBundle } from './credentials.js'
 
 export type AgentsApiProvider = 'CLAUDE' | 'CODEX'
 
@@ -57,9 +57,9 @@ export class AgentsApiClient {
       ok: res.ok,
       provider: req.provider,
     })
-  if (!res.ok) {
-    throw new Error(`agents-api credential ingest failed: ${res.status} ${redactString(await safeText(res))}`)
-  }
+    if (!res.ok) {
+      throw new Error(`agents-api credential ingest failed: ${res.status} ${redactString(await safeText(res))}`)
+    }
   }
 
   storedStatus(): StoredCredentialStatus {
@@ -73,11 +73,17 @@ export function providerForApi(provider: Provider): AgentsApiProvider {
 
 export function payloadForApi(provider: Provider, bundle: CredentialBundle): Record<string, string> {
   if (provider === 'claude') {
-    const oauthToken = bundle.data.oauth_token
-    if (!oauthToken) {
-      throw new Error('no Claude OAuth token captured')
+    const credentialsJson = bundle.data.credentials_json
+    if (!credentialsJson) {
+      throw new Error('no Claude credentials_json captured')
     }
-    return { oauth_token: oauthToken }
+    const accountJson = bundle.data.account_json
+    const oauthToken = bundle.data.oauth_token ?? extractClaudeOauthToken(credentialsJson)
+    return {
+      credentials_json: credentialsJson,
+      ...(accountJson ? { account_json: accountJson } : {}),
+      ...(oauthToken ? { oauth_token: oauthToken } : {}),
+    }
   }
 
   const authJson = bundle.data.auth_json

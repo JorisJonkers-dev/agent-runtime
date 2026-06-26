@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { LoginSession, SessionManager, type SessionDeps } from '../src/worker/session.js'
@@ -36,6 +36,13 @@ interface LogEntry {
   fields?: Record<string, unknown>
 }
 
+interface ClaudeArtifacts {
+  token: string
+  credentialsJson: string
+  accountJson: string
+  claudeJson: string
+}
+
 function memoryLogger(entries: LogEntry[]): Logger {
   return {
     info: (msg, fields) => entries.push({ level: 'info', msg, fields }),
@@ -45,7 +52,10 @@ function memoryLogger(entries: LogEntry[]): Logger {
   }
 }
 
-function fakeAgentsApi(fail?: Error): { postCredentials: (req: PostedCredential) => Promise<void>; posts: PostedCredential[] } {
+function fakeAgentsApi(fail?: Error): {
+  postCredentials: (req: PostedCredential) => Promise<void>
+  posts: PostedCredential[]
+} {
   const posts: PostedCredential[] = []
   return {
     posts,
@@ -55,6 +65,39 @@ function fakeAgentsApi(fail?: Error): { postCredentials: (req: PostedCredential)
       }
       posts.push(req)
     },
+  }
+}
+
+function claudeArtifacts(token = 'sk-ant-oat01-SubscriptionToken1234567890_-abcXYZ'): ClaudeArtifacts {
+  const account = { emailAddress: 'alice@example.com', accountUuid: 'acct-1' }
+  const credentials = {
+    claudeAiOauth: {
+      accessToken: token,
+      refreshToken: 'refresh-token',
+      scopes: ['user:profile', 'user:inference', 'user:sessions:claude_code'],
+      subscriptionType: 'max',
+    },
+  }
+  return {
+    token,
+    credentialsJson: JSON.stringify(credentials),
+    accountJson: JSON.stringify(account),
+    claudeJson: JSON.stringify({ installMethod: 'global', oauthAccount: account }),
+  }
+}
+
+function writeClaudeArtifacts(homeDir: string, token?: string): ClaudeArtifacts {
+  const artifacts = claudeArtifacts(token)
+  writeFileSync(join(homeDir, '.claude', '.credentials.json'), artifacts.credentialsJson)
+  writeFileSync(join(homeDir, '.claude.json'), artifacts.claudeJson)
+  return artifacts
+}
+
+function claudePayload(artifacts: ClaudeArtifacts): Record<string, string> {
+  return {
+    credentials_json: artifacts.credentialsJson,
+    account_json: artifacts.accountJson,
+    oauth_token: artifacts.token,
   }
 }
 
@@ -117,10 +160,81 @@ describe('LoginSession state machine', () => {
     }
   }
 
+  it('seeds Claude subscription login settings and drives bounded onboarding Enter-through', async () => {
+    vi.useFakeTimers()
+    try {
+      const logs: LogEntry[] = []
+      const { deps: d, instances } = deps(
+        (file, args) => {
+          expect(file).toBe('claude')
+          expect(args).toEqual([])
+          return [
+            { type: 'emit', data: 'Choose the look for Claude Code\r\nDark mode\r\n' },
+            {
+              type: 'expectStdin',
+              match: (i) => i === '\r',
+              then: [
+                {
+                  type: 'emit',
+                  data:
+                    'Login method pre-selected: Subscription Plan (Claude Pro/Max)\r\n' +
+                    "Browser didn't open? Use the url below to sign in\r\n" +
+                    'https://claude.com/cai/oauth/authorize?code=true&state=nav\r\n' +
+                    'Paste code here if prompted >',
+                },
+              ],
+            },
+          ]
+        },
+        new NoopLeaseLock(),
+        memoryLogger(logs),
+      )
+      const mgr = new SessionManager(d)
+      const started = mgr.start('claude', 'alice')
+      await Promise.resolve()
+
+      expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe(
+        JSON.stringify({
+          theme: 'dark',
+          hasCompletedOnboarding: true,
+          bypassPermissionsModeAccepted: true,
+        }),
+      )
+      expect(readFileSync(join(home, 'managed-settings.json'), 'utf8')).toBe(
+        JSON.stringify({ forceLoginMethod: 'claudeai' }),
+      )
+
+      await vi.advanceTimersByTimeAsync(1_500)
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(instances[0].writes).toEqual(['\r'])
+      expect(mgr.status(started.id)!.phase).toBe('awaiting_url')
+      expect(mgr.status(started.id)!.authorizeUrl).toContain('claude.com/cai/oauth/authorize')
+      expect(logs.some((entry) => entry.msg === 'Claude onboarding Enter written to PTY')).toBe(true)
+      mgr.cancel(started.id)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not clobber an existing Claude account file when seeding onboarding', async () => {
+    const existing = '{"oauthAccount":{"emailAddress":"keep@example.com"}}'
+    writeFileSync(join(home, '.claude.json'), existing)
+    const { deps: d } = deps(() => [])
+    const mgr = new SessionManager(d)
+    const started = mgr.start('claude', 'alice')
+
+    expect(readFileSync(join(home, '.claude.json'), 'utf8')).toBe(existing)
+    expect(readFileSync(join(home, 'managed-settings.json'), 'utf8')).toBe(
+      JSON.stringify({ forceLoginMethod: 'claudeai' }),
+    )
+    mgr.cancel(started.id)
+  })
+
   it('drives the full Claude flow: authorize URL → redirect paste-back → success → agents-api POST', async () => {
-    writeFileSync(join(home, '.claude', '.credentials.json'), '{"accessToken":"secret"}')
-    writeFileSync(join(home, '.claude.json'), '{"oauthAccount":{}}')
     const token = 'sk-ant-oat01-FullFlowToken1234567890_-abcXYZ'
+    const artifacts = claudeArtifacts(token)
 
     const { deps: d, instances } = deps(() => [
       { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\nPaste code here if prompted >' },
@@ -132,7 +246,8 @@ describe('LoginSession state machine', () => {
             type: 'expectStdin',
             match: (i) => i === '\r',
             then: [
-              { type: 'emit', data: `Login successful.\r\nYour OAuth token: ${token}\r\n` },
+              { type: 'effect', run: () => writeClaudeArtifacts(home, token) },
+              { type: 'emit', data: 'Logged in as alice@example.com\r\n' },
               { type: 'exit', code: 0 },
             ],
           },
@@ -157,13 +272,12 @@ describe('LoginSession state machine', () => {
 
     expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('succeeded')
     expect(instances[0].writes).toEqual(['redirect-code-2', '\r'])
-    expect(agentsApi.posts).toEqual([
-      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
-    ])
+    expect(agentsApi.posts).toEqual([{ userId: 'alice', provider: 'CLAUDE', payload: claudePayload(artifacts) }])
   })
 
   it('writes the Claude authorization code and submit Enter as distinct PTY writes before finalizing', async () => {
     const token = 'sk-ant-oat01-SeparateEnterToken1234567890_-abcXYZ'
+    const artifacts = claudeArtifacts(token)
     const { deps: d, instances } = deps(() => [
       { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
       {
@@ -173,7 +287,10 @@ describe('LoginSession state machine', () => {
           {
             type: 'expectStdin',
             match: (i) => i === '\r',
-            then: [{ type: 'emit', data: `Your OAuth token: ${token}\r\n` }],
+            then: [
+              { type: 'effect', run: () => writeClaudeArtifacts(home, token) },
+              { type: 'emit', data: 'Credential file was updated.\r\n' },
+            ],
           },
         ],
       },
@@ -186,9 +303,7 @@ describe('LoginSession state machine', () => {
 
     expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 1000)).toBe('succeeded')
     expect(instances[0].writes).toEqual(['bulk-paste-sensitive-code', '\r'])
-    expect(agentsApi.posts).toEqual([
-      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
-    ])
+    expect(agentsApi.posts).toEqual([{ userId: 'alice', provider: 'CLAUDE', payload: claudePayload(artifacts) }])
   })
 
   it('waits for the Claude code prompt before writing the extracted authorization code', async () => {
@@ -275,8 +390,7 @@ describe('LoginSession state machine', () => {
     expect(logs.some((entry) => entry.level === 'error' && entry.msg.includes('PTY process handle missing'))).toBe(true)
   })
 
-  it('captures the setup-token OAuth token from stdout when no credentials file is written', async () => {
-    // No .credentials.json is created — setup-token only prints the token.
+  it('fails Claude capture when only a stdout OAuth token is available', async () => {
     const token = 'sk-ant-oat01-StdoutOnlyToken1234567890_-abcXYZ'
     const { deps: d } = deps(() => [
       {
@@ -299,15 +413,12 @@ describe('LoginSession state machine', () => {
     const started = mgr.start('claude', 'alice')
     await tick()
     expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
-    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('succeeded')
-    expect(agentsApi.posts).toEqual([
-      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
-    ])
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('failed')
+    expect(mgr.status(started.id)!.error).toMatch(/credentials\.json was not written/)
+    expect(agentsApi.posts).toEqual([])
   })
 
-  it('finalizes Claude promptly when setup-token prints the OAuth token after paste-back but stays open', async () => {
-    // Production regression: the worker waited for a success phrase or process
-    // exit, so a CLI that printed the token and kept the PTY open never posted.
+  it('does not finalize Claude from a stdout OAuth token while waiting for credential files', async () => {
     const token = 'sk-ant-oat01-NoExitToken1234567890_-abcXYZ'
     const { deps: d } = deps(() => [
       { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
@@ -317,19 +428,19 @@ describe('LoginSession state machine', () => {
         then: [{ type: 'emit', data: `CLAUDE_CODE_OAUTH_TOKEN=${token}\r\n` }],
       },
     ])
+    d.redirectTimeoutMs = 20
     const mgr = new SessionManager(d)
     const started = mgr.start('claude', 'alice')
     await tick()
 
     expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
 
-    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 250)).toBe('succeeded')
-    expect(agentsApi.posts).toEqual([
-      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
-    ])
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 500)).toBe('failed')
+    expect(mgr.status(started.id)!.error).toMatch(/timed out waiting for Claude credential capture/)
+    expect(agentsApi.posts).toEqual([])
   })
 
-  it('finalizes Claude from an OSC8-linked setup-token OAuth token after paste-back', async () => {
+  it('requires credential files even when an OSC8-linked OAuth token is printed after paste-back', async () => {
     const token = 'sk-ant-oat01-Osc8SessionToken1234567890_-abcXYZ'
     const { deps: d } = deps(() => [
       { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
@@ -339,20 +450,20 @@ describe('LoginSession state machine', () => {
         then: [{ type: 'emit', data: `Token: \x1b]8;;${token}\x07copy token\x1b]8;;\x07\r\n` }],
       },
     ])
+    d.redirectTimeoutMs = 20
     const mgr = new SessionManager(d)
     const started = mgr.start('claude', 'alice')
     await tick()
 
     expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
 
-    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 250)).toBe('succeeded')
-    expect(agentsApi.posts).toEqual([
-      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
-    ])
+    expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 500)).toBe('failed')
+    expect(agentsApi.posts).toEqual([])
   })
 
-  it('finalizes Claude from .credentials.json when setup-token prints no token and stays open', async () => {
+  it('finalizes Claude from credential files when interactive login prints no token and stays open', async () => {
     const token = 'sk-ant-oat01-CredentialsFileToken1234567890_-abcXYZ'
+    const artifacts = claudeArtifacts(token)
     const { deps: d } = deps(() => [
       { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
       {
@@ -370,25 +481,30 @@ describe('LoginSession state machine', () => {
     const started = mgr.start('claude', 'alice')
     await tick()
 
-    writeFileSync(join(home, '.claude', '.credentials.json'), JSON.stringify({ oauth_token: token }))
+    writeClaudeArtifacts(home, token)
     expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
 
     expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'], 500)).toBe('succeeded')
-    expect(agentsApi.posts).toEqual([
-      { userId: 'alice', provider: 'CLAUDE', payload: { oauth_token: token } },
-    ])
+    expect(agentsApi.posts).toEqual([{ userId: 'alice', provider: 'CLAUDE', payload: claudePayload(artifacts) }])
   })
 
-  it('redacts setup-token output and records lifecycle log decisions without logging the token', async () => {
+  it('redacts Claude login output and records lifecycle log decisions without logging the token', async () => {
     const token = 'sk-ant-oat01-LogRedactionToken1234567890_-abcXYZ'
+    const artifacts = claudeArtifacts(token)
     const logs: LogEntry[] = []
     const { deps: d } = deps(
       () => [
-        { type: 'emit', data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >' },
+        {
+          type: 'emit',
+          data: 'Open https://claude.com/cai/oauth/authorize?code=true\r\nPaste code here if prompted >',
+        },
         {
           type: 'expectStdin',
           match: () => true,
-          then: [{ type: 'emit', data: `Your OAuth token: ${token}\r\n` }],
+          then: [
+            { type: 'effect', run: () => writeClaudeArtifacts(home, token) },
+            { type: 'emit', data: `Your OAuth token: ${token}\r\nLogged in as alice@example.com\r\n` },
+          ],
         },
       ],
       new NoopLeaseLock(),
@@ -404,9 +520,10 @@ describe('LoginSession state machine', () => {
     const serialized = JSON.stringify(logs)
     expect(serialized).not.toContain(token)
     expect(serialized).toContain('«redacted»')
-    expect(logs.some((entry) => entry.msg === 'Claude setup-token output scanned')).toBe(true)
-    expect(logs.some((entry) => entry.msg === 'Claude setup-token parse attempt')).toBe(true)
+    expect(logs.some((entry) => entry.msg === 'Claude login output scanned')).toBe(true)
+    expect(logs.some((entry) => entry.msg === 'Claude OAuth token parse attempt')).toBe(true)
     expect(logs.some((entry) => entry.msg === 'login session phase transition')).toBe(true)
+    expect(agentsApi.posts[0]).toEqual({ userId: 'alice', provider: 'CLAUDE', payload: claudePayload(artifacts) })
   })
 
   it('fails Claude after a bounded post-redirect timeout with redacted output context', async () => {
@@ -471,7 +588,7 @@ describe('LoginSession state machine', () => {
     const started = mgr.start('claude', 'alice')
     await tick()
     expect(mgr.submitRedirectUrl(started.id, '   ').ok).toBe(false)
-    // setup-token returns a bare code, not a URL — it must be accepted.
+    // Claude's manual flow returns a bare code, not a URL — it must be accepted.
     expect(mgr.submitRedirectUrl(started.id, 'ABCD-1234-token').ok).toBe(true)
     expect(await waitForWrites(() => instances[0].writes, 2)).toEqual(['ABCD-1234-token', '\r'])
     expect(mgr.cancel(started.id).ok).toBe(true)
@@ -564,9 +681,8 @@ describe('LoginSession state machine', () => {
   })
 
   it('surfaces an agents-api ingest failure as a failed session', async () => {
-    writeFileSync(join(home, '.claude', '.credentials.json'), '{}')
-    writeFileSync(join(home, '.claude.json'), '{}')
     const failingAgentsApi = fakeAgentsApi(new Error('agents-api credential ingest failed: 503 unavailable'))
+    const token = 'sk-ant-oat01-FailureToken1234567890'
 
     const { spawner } = fakeSpawner(() => [
       { type: 'emit', data: 'Visit https://claude.ai/oauth/authorize?code=1\r\nPaste code here if prompted >' },
@@ -578,7 +694,8 @@ describe('LoginSession state machine', () => {
             type: 'expectStdin',
             match: (i) => i === '\r',
             then: [
-              { type: 'emit', data: 'Login successful.\r\nYour OAuth token: sk-ant-oat01-FailureToken1234567890\r\n' },
+              { type: 'effect', run: () => writeClaudeArtifacts(home, token) },
+              { type: 'emit', data: 'Logged in as alice@example.com\r\n' },
             ],
           },
         ],

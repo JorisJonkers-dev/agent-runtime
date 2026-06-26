@@ -1,7 +1,7 @@
 import { runWorker } from './worker/index.js'
 
 // The credential-login worker: the only process this image runs. It owns the
-// PTY that drives `claude setup-token` / `codex login --device-auth`, captures
+// PTY that drives interactive `claude` / `codex login --device-auth`, captures
 // the credential files, and posts them to agents-api. The browser UI and its
 // auth live in agents-ui / agents-api, which proxy to this worker over the
 // internal token.

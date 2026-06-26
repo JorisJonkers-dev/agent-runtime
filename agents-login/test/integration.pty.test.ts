@@ -68,7 +68,7 @@ describe('real-PTY integration with fake CLIs', () => {
       // Claude: wait for the authorize URL, paste the redirect, expect success.
       const claude = mgr.start('claude', 'alice')
       await waitFor(() => mgr.status(claude.id)!.phase === 'awaiting_url')
-      expect(mgr.status(claude.id)!.authorizeUrl).toContain('claude.ai/oauth/authorize')
+      expect(mgr.status(claude.id)!.authorizeUrl).toContain('claude.com/cai/oauth/authorize')
       const sub = mgr.submitRedirectUrl(
         claude.id,
         'https://platform.claude.com/oauth/code/callback?code=integration-code-2&state=integration-state-2',
@@ -77,6 +77,9 @@ describe('real-PTY integration with fake CLIs', () => {
       await waitFor(() => mgr.status(claude.id)!.phase === 'succeeded')
       expect(posts[0]).toMatchObject({ userId: 'alice', provider: 'CLAUDE' })
       expect(posts[0].payload.oauth_token).toContain('sk-ant-oat01')
+      expect(JSON.parse(posts[0].payload.credentials_json).claudeAiOauth.scopes).toContain('user:profile')
+      expect(JSON.parse(posts[0].payload.credentials_json).claudeAiOauth.subscriptionType).toBe('max')
+      expect(JSON.parse(posts[0].payload.account_json).emailAddress).toBe('x@y')
 
       // Codex: device flow, no paste-back.
       const codex = mgr.start('codex', 'alice')

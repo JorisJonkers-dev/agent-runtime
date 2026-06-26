@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Logger } from '../shared/log.js'
 import { redactString } from '../shared/redact.js'
 import type { Provider, SessionPhase, SessionStatus } from '../shared/types.js'
 import { isTerminal } from '../shared/types.js'
-import { capture, readClaudeCredentialsToken, type CredentialPaths } from './credentials.js'
+import { capture, readClaudeCredentialsJson, type CredentialPaths } from './credentials.js'
 import {
   detectClaudeCodePrompt,
   detectFailure,
@@ -31,12 +33,7 @@ export interface SessionDeps {
 }
 
 function defaultCommand(provider: Provider): { file: string; args: string[] } {
-  // `claude /login` is an interactive REPL slash command ("not available in this
-  // environment"); `claude setup-token` is the headless OAuth flow that prints an
-  // authorize URL and takes a pasted code back, writing the standard credentials.
-  return provider === 'claude'
-    ? { file: 'claude', args: ['setup-token'] }
-    : { file: 'codex', args: ['login', '--device-auth'] }
+  return provider === 'claude' ? { file: 'claude', args: [] } : { file: 'codex', args: ['login', '--device-auth'] }
 }
 
 const MAX_BUFFER = 256 * 1024
@@ -44,8 +41,16 @@ const DEFAULT_REDIRECT_TIMEOUT_MS = 60_000
 const CLAUDE_CREDENTIAL_POLL_MS = 250
 const CLAUDE_SUBMIT_ENTER_DELAY_MS = 120
 const CLAUDE_SUBMIT_RETRY_DELAY_MS = 3_000
+const CLAUDE_ONBOARDING_ENTER_INTERVAL_MS = 1_500
+const CLAUDE_ONBOARDING_ENTER_MAX_SENDS = 6
 const LOG_LINE_LIMIT = 512
 const FAILURE_TAIL_LIMIT = 2_000
+const CLAUDE_ONBOARDING_SEED = {
+  theme: 'dark',
+  hasCompletedOnboarding: true,
+  bypassPermissionsModeAccepted: true,
+}
+const CLAUDE_MANAGED_SETTINGS = { forceLoginMethod: 'claudeai' }
 
 export class LoginSession {
   readonly id = randomUUID()
@@ -64,6 +69,8 @@ export class LoginSession {
   private credentialProbeTimer?: NodeJS.Timeout
   private claudeSubmitEnterTimer?: NodeJS.Timeout
   private claudeSubmitRetryTimer?: NodeJS.Timeout
+  private claudeOnboardingEnterTimer?: NodeJS.Timeout
+  private claudeOnboardingEnterCount = 0
   private redirectSubmitted = false
   private pendingClaudeCode?: string
   private updatedBy = 'unknown'
@@ -129,6 +136,20 @@ export class LoginSession {
   start(updatedBy: string): void {
     this.updatedBy = updatedBy
     const cmd = (this.deps.command ?? defaultCommand)(this.provider)
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: this.deps.paths.home,
+      CODEX_HOME: this.deps.paths.codexHome,
+    }
+    if (this.provider === 'claude') {
+      try {
+        env.CLAUDE_CODE_MANAGED_SETTINGS_PATH = this.prepareClaudeLoginHome()
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err)
+        this.fail(`failed to prepare Claude login home: ${reason}`)
+        return
+      }
+    }
     this.deps.logger.info('login session starting', {
       sessionId: this.id,
       provider: this.provider,
@@ -136,11 +157,6 @@ export class LoginSession {
       command: cmd.file,
       args: cmd.args,
     })
-    const env = {
-      ...process.env,
-      HOME: this.deps.paths.home,
-      CODEX_HOME: this.deps.paths.codexHome,
-    }
     this.proc = this.deps.spawner(cmd.file, cmd.args, {
       cwd: this.deps.paths.home,
       env,
@@ -155,6 +171,30 @@ export class LoginSession {
     if (typeof this.timer.unref === 'function') {
       this.timer.unref()
     }
+    if (this.provider === 'claude') {
+      this.startClaudeOnboardingNavigation()
+    }
+  }
+
+  private prepareClaudeLoginHome(): string {
+    mkdirSync(this.deps.paths.home, { recursive: true })
+    mkdirSync(join(this.deps.paths.home, '.claude'), { recursive: true })
+    const dotClaudePath = join(this.deps.paths.home, '.claude.json')
+    if (!existsSync(dotClaudePath)) {
+      writeFileSync(dotClaudePath, JSON.stringify(CLAUDE_ONBOARDING_SEED))
+      this.deps.logger.info('Claude login onboarding seed written', {
+        sessionId: this.id,
+        path: '$HOME/.claude.json',
+      })
+    }
+    const managedSettingsPath = join(this.deps.paths.home, 'managed-settings.json')
+    writeFileSync(managedSettingsPath, JSON.stringify(CLAUDE_MANAGED_SETTINGS))
+    this.deps.logger.info('Claude login managed settings written', {
+      sessionId: this.id,
+      path: '$HOME/managed-settings.json',
+      forceLoginMethod: 'claudeai',
+    })
+    return managedSettingsPath
   }
 
   private append(chunk: string): void {
@@ -174,12 +214,77 @@ export class LoginSession {
   }
 
   private logClaudeTokenParseAttempt(source: string, matched: boolean, reason: string): void {
-    this.deps.logger.info('Claude setup-token parse attempt', {
+    this.deps.logger.info('Claude OAuth token parse attempt', {
       sessionId: this.id,
       source,
       matched,
       reason,
     })
+  }
+
+  private startClaudeOnboardingNavigation(): void {
+    this.claudeOnboardingEnterCount = 0
+    this.scheduleClaudeOnboardingEnter()
+  }
+
+  private scheduleClaudeOnboardingEnter(): void {
+    if (
+      this.provider !== 'claude' ||
+      this.phase !== 'starting' ||
+      this.authorizeUrl ||
+      !this.proc ||
+      this.claudeOnboardingEnterTimer
+    ) {
+      return
+    }
+    if (this.claudeOnboardingEnterCount >= CLAUDE_ONBOARDING_ENTER_MAX_SENDS) {
+      this.deps.logger.info('Claude onboarding Enter navigation stopped', {
+        sessionId: this.id,
+        provider: this.provider,
+        reason: 'max sends reached before authorize URL',
+        sends: this.claudeOnboardingEnterCount,
+      })
+      return
+    }
+    this.claudeOnboardingEnterTimer = setTimeout(() => {
+      this.claudeOnboardingEnterTimer = undefined
+      this.writeClaudeOnboardingEnter()
+    }, CLAUDE_ONBOARDING_ENTER_INTERVAL_MS)
+    if (typeof this.claudeOnboardingEnterTimer.unref === 'function') {
+      this.claudeOnboardingEnterTimer.unref()
+    }
+  }
+
+  private writeClaudeOnboardingEnter(): void {
+    if (this.provider !== 'claude' || this.phase !== 'starting' || this.authorizeUrl || !this.proc) {
+      return
+    }
+    const parsed = parseClaude(this.buffer).authorizeUrl
+    if (parsed) {
+      this.authorizeUrl = parsed
+      this.setPhase(
+        'awaiting_url',
+        'Open the authorize URL, approve, then paste the authorization code.',
+        'Claude authorize URL detected during onboarding navigation',
+      )
+      return
+    }
+    this.claudeOnboardingEnterCount += 1
+    this.deps.logger.info('Claude onboarding Enter written to PTY', {
+      sessionId: this.id,
+      provider: this.provider,
+      send: this.claudeOnboardingEnterCount,
+      maxSends: CLAUDE_ONBOARDING_ENTER_MAX_SENDS,
+    })
+    this.proc.write('\r')
+    this.scheduleClaudeOnboardingEnter()
+  }
+
+  private clearClaudeOnboardingNavigation(): void {
+    if (this.claudeOnboardingEnterTimer) {
+      clearTimeout(this.claudeOnboardingEnterTimer)
+      this.claudeOnboardingEnterTimer = undefined
+    }
   }
 
   private onData(chunk: string, updatedBy: string): void {
@@ -190,7 +295,7 @@ export class LoginSession {
     }
 
     if (this.provider === 'claude') {
-      this.deps.logger.info('Claude setup-token output scanned', {
+      this.deps.logger.info('Claude login output scanned', {
         sessionId: this.id,
         phase: this.phase,
         bytes: chunk.length,
@@ -213,6 +318,7 @@ export class LoginSession {
             'Open the authorize URL, approve, then paste the authorization code.',
             'Claude authorize URL detected',
           )
+          this.clearClaudeOnboardingNavigation()
         }
       }
       this.maybeSubmitPendingClaudeCode()
@@ -244,12 +350,8 @@ export class LoginSession {
         'PTY output received after redirect',
       )
     }
-    if (claudeTokenCaptured) {
-      void this.finalize(updatedBy, claudeTokenCaptured, 'Claude OAuth token parsed from PTY output')
-      return
-    }
     if (detectSuccess(this.provider, this.buffer)) {
-      void this.finalize(updatedBy, undefined, 'CLI success output detected')
+      void this.finalize(updatedBy, claudeTokenCaptured, 'CLI success output detected')
       return
     }
     if (this.provider === 'claude' && this.redirectSubmitted) {
@@ -298,7 +400,7 @@ export class LoginSession {
       redirectSubmitted: this.redirectSubmitted,
       phase: this.phase,
     })
-    // A clean exit after the operator submitted the code (Claude setup-token) or
+    // A clean exit after the operator submitted the code (Claude login) or
     // after the device prompt was shown and approved (Codex) means the CLI wrote
     // its credentials — capture them even if no success line was matched.
     const completed =
@@ -461,15 +563,15 @@ export class LoginSession {
       return
     }
     try {
-      const token = await readClaudeCredentialsToken(this.deps.paths)
+      const credentialsJson = await readClaudeCredentialsJson(this.deps.paths)
       this.deps.logger.info('Claude credential file parse attempt', {
         sessionId: this.id,
         source: '$HOME/.claude/.credentials.json',
-        matched: token !== undefined,
+        matched: credentialsJson !== undefined,
         reason,
       })
-      if (token) {
-        await this.finalize(this.updatedBy, token, 'Claude OAuth token parsed from credentials file')
+      if (credentialsJson !== undefined) {
+        await this.finalize(this.updatedBy, undefined, 'Claude credentials file detected')
         return
       }
     } catch (err) {
@@ -496,6 +598,7 @@ export class LoginSession {
       this.credentialProbeTimer = undefined
     }
     this.clearClaudeSubmitTimers()
+    this.clearClaudeOnboardingNavigation()
   }
 
   private async finalize(
@@ -508,8 +611,6 @@ export class LoginSession {
     }
     this.setPhase('finalizing', 'Capturing credentials…', reason)
     try {
-      // For Claude the canonical credential is the OAuth token setup-token
-      // prints to stdout, not a file; parse it from the accumulated buffer.
       const claudeToken =
         this.provider === 'claude' ? (claudeTokenOverride ?? parseClaudeToken(this.buffer)) : undefined
       this.deps.logger.info('login session finalize starting', {

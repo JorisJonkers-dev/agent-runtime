@@ -39,7 +39,7 @@ export function oscHyperlinkTargets(raw: string): string[] {
   return targets
 }
 
-// `claude setup-token` prints an OAuth authorize URL. The host has moved across
+// Claude's OAuth flows print an authorize URL. The host has moved across
 // claude.ai / claude.com / platform.claude.com / console.anthropic.com over CLI
 // versions (2.1.x emits claude.com), so accept all of them.
 const CLAUDE_URL_PATTERN =
@@ -101,11 +101,9 @@ export function parseClaudeRedirectCode(input: string): ClaudeRedirectCode | und
   }
 }
 
-// `claude setup-token`'s actual product is a long-lived OAuth token printed to
-// stdout ("Your OAuth token (valid for 1 year): sk-ant-oat01-…", meant for
-// CLAUDE_CODE_OAUTH_TOKEN). It is NOT persisted to a credentials file, so the
-// token must be captured from the PTY output. The PTY is 400 cols wide, so the
-// ~100-char token is emitted on one line and bounded by whitespace.
+// Legacy Claude setup-token output included a long-lived OAuth token on stdout.
+// The subscription login now uses .credentials.json as the canonical artifact,
+// but this parser still supports optional back-compat payload fields.
 const CLAUDE_TOKEN_PATTERN = /(sk-ant-oat[0-9]{2}-[A-Za-z0-9_-]{20,})/
 
 export function parseClaudeToken(buffer: string): string | undefined {
@@ -142,7 +140,7 @@ export function parseCodex(buffer: string): CodexParse {
 
 // The CLIs print an unambiguous success line once the login completes.
 const CLAUDE_SUCCESS =
-  /(login\s*success|successfully\s*logged\s*in|you\s*are\s*now\s*logged\s*in|authenticated|token\s*(?:saved|created|stored)|setup\s*complete)/i
+  /(login\s*success|logged\s*in\s*as|successfully\s*logged\s*in|you\s*are\s*now\s*logged\s*in|authenticated|token\s*(?:saved|created|stored)|setup\s*complete)/i
 const CODEX_SUCCESS = /(login\s*success|successfully\s*logged\s*in|signed\s*in|authentication\s*complete)/i
 
 export function detectSuccess(provider: Provider, buffer: string): boolean {

@@ -91,11 +91,17 @@ describe('AgentsApiClient', () => {
   })
 
   it('extracts only the required provider payload fields', () => {
+    const credentialsJson = '{"accessToken":"sk-ant-oat01-AgentPayloadToken1234567890"}'
+    const accountJson = '{"emailAddress":"alice@example.com"}'
     expect(
       payloadForApi('claude', {
-        data: { oauth_token: 'tok', credentials_json: '{}', updated_by: 'alice' },
+        data: { credentials_json: credentialsJson, account_json: accountJson, updated_by: 'alice' },
       }),
-    ).toEqual({ oauth_token: 'tok' })
+    ).toEqual({
+      credentials_json: credentialsJson,
+      account_json: accountJson,
+      oauth_token: 'sk-ant-oat01-AgentPayloadToken1234567890',
+    })
 
     expect(
       payloadForApi('codex', {
@@ -104,8 +110,16 @@ describe('AgentsApiClient', () => {
     ).toEqual({ auth_json: '{}', config_toml: 'model="x"' })
   })
 
+  it('omits optional Claude payload fields when account and token are unavailable', () => {
+    expect(
+      payloadForApi('claude', {
+        data: { credentials_json: '{"claudeAiOauth":{"refreshToken":"refresh-token"}}' },
+      }),
+    ).toEqual({ credentials_json: '{"claudeAiOauth":{"refreshToken":"refresh-token"}}' })
+  })
+
   it('rejects incomplete provider payloads before posting', () => {
-    expect(() => payloadForApi('claude', { data: { credentials_json: '{}' } })).toThrow(/Claude OAuth token/)
+    expect(() => payloadForApi('claude', { data: { account_json: '{}' } })).toThrow(/Claude credentials_json/)
     expect(() => payloadForApi('codex', { data: { auth_json: '{}' } })).toThrow(/Codex credential/)
   })
 

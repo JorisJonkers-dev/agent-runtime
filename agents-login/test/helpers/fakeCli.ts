@@ -5,7 +5,7 @@ import { join } from 'node:path'
 /**
  * Materialise fake `claude` and `codex` executables (POSIX shell scripts) in a
  * temp dir. They emit the same authorize-URL / device-code lines the real CLIs
- * print, perform the redirect-URL stdin handshake (Claude), and write the four
+ * print, perform the redirect-URL stdin handshake (Claude), and write the
  * credential files into HOME / CODEX_HOME — so the worker can be driven by a
  * real PTY with no network and no real CLIs.
  */
@@ -26,16 +26,24 @@ export function makeFakeCliEnv(): FakeCliEnv {
   mkdirSync(codexHome, { recursive: true })
 
   const claude = `#!/usr/bin/env sh
-echo "Visit the following URL to authorize Claude Code:"
-echo "https://claude.ai/oauth/authorize?code=abc123&state=xyz"
+if [ ! -f "$CLAUDE_CODE_MANAGED_SETTINGS_PATH" ]; then
+  echo "error: missing managed settings"
+  exit 1
+fi
+echo "Choose the look for Claude Code"
+echo "Dark mode"
+read THEME
+echo "Login method pre-selected: Subscription Plan (Claude Pro/Max)"
+echo "Browser didn't open? Use the url below to sign in"
+echo "https://claude.com/cai/oauth/authorize?code=true&scope=user%3Aprofile%20user%3Ainference%20user%3Asessions%3Aclaude_code&state=xyz"
 echo "Paste code here if prompted >"
 # block on stdin for the authorization code
 read CODE
 echo "received: $CODE" >/dev/null
-echo "Login successful. You are now logged in."
 mkdir -p "$HOME/.claude"
-printf '%s' '{"accessToken":"claude-secret-token","refreshToken":"r"}' > "$HOME/.claude/.credentials.json"
-printf '%s' '{"installMethod":"global","oauthAccount":{"emailAddress":"x@y"}}' > "$HOME/.claude.json"
+printf '%s' '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-claudeSubscriptionToken1234567890","refreshToken":"r","scopes":["user:profile","user:inference","user:sessions:claude_code"],"subscriptionType":"max"}}' > "$HOME/.claude/.credentials.json"
+printf '%s' '{"installMethod":"global","oauthAccount":{"emailAddress":"x@y","accountUuid":"acct-1"}}' > "$HOME/.claude.json"
+echo "Logged in as x@y"
 exit 0
 `
 
