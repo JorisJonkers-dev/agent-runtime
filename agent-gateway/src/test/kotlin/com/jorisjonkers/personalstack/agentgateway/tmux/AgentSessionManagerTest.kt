@@ -38,11 +38,18 @@ class AgentSessionManagerTest {
         stagedInputs: GatewayProperties.StagedInputs = GatewayProperties.StagedInputs(),
         transcripts: GatewayProperties.Transcripts = GatewayProperties.Transcripts(trimIntervalSeconds = 1),
         telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
+        claudeTranscriptLocator: ClaudeTranscriptLocator = ClaudeTranscriptLocator(tmp.resolve("claude/projects")),
     ): AgentSessionManager {
         val workspace = tmp.resolve("workspace")
         Files.createDirectories(workspace)
         val props = gatewayProperties(tmp, workspace, stagedInputs, transcripts)
-        return AgentSessionManager(tmux, props, TranscriptStore(props), telemetry).also(managers::add)
+        return AgentSessionManager(
+            tmux,
+            props,
+            TranscriptStore(props),
+            telemetry,
+            claudeTranscriptLocator = claudeTranscriptLocator,
+        ).also(managers::add)
     }
 
     private fun gatewayProperties(
@@ -189,15 +196,26 @@ class AgentSessionManagerTest {
     }
 
     @Test
-    fun `spawn resumes claude from the prior cliSessionId on revival`(
+    fun `spawn resumes claude from the prior cliSessionId when transcript exists on revival`(
         @TempDir tmp: Path,
     ) {
-        val mgr = manager(tmp)
+        val claudeTranscripts = ClaudeTranscriptLocator(tmp.resolve("claude/projects"))
+        val workspace = tmp.resolve("repo.with.dots")
+        Files.createDirectories(workspace)
         val prior = "11111111-2222-4333-8444-555555555555"
-        val s = mgr.spawn(AgentKind.CLAUDE, resumeCliSessionId = prior)
+        val transcript = claudeTranscripts.transcriptPath(workspace.toString(), prior)
+        Files.createDirectories(transcript.parent)
+        Files.writeString(transcript, """{"sessionId":"$prior"}""" + "\n")
+        val mgr = manager(tmp, claudeTranscriptLocator = claudeTranscripts)
+
+        val s = mgr.spawn(AgentKind.CLAUDE, workspacePath = workspace.toString(), resumeCliSessionId = prior)
+
         // The persisted id stays stable across epochs so the next revival
         // resumes the same conversation.
         assertThat(s.cliSessionId).isEqualTo(prior)
+        assertThat(transcript.parent.fileName.toString())
+            .contains("repo-with-dots")
+            .doesNotContain(".")
         verify {
             tmux.newSession(
                 s.tmuxSession,
@@ -205,6 +223,31 @@ class AgentSessionManagerTest {
                     cmd.contains("--resume") &&
                         cmd[cmd.indexOf("--resume") + 1] == prior &&
                         !cmd.contains("--session-id")
+                },
+                workspace.toString(),
+            )
+        }
+    }
+
+    @Test
+    fun `spawn starts fresh claude conversation with stable cliSessionId when transcript is missing on revival`(
+        @TempDir tmp: Path,
+    ) {
+        val claudeTranscripts = ClaudeTranscriptLocator(tmp.resolve("claude/projects"))
+        val mgr = manager(tmp, claudeTranscriptLocator = claudeTranscripts)
+        val prior = "11111111-2222-4333-8444-555555555555"
+
+        val s = mgr.spawn(AgentKind.CLAUDE, resumeCliSessionId = prior)
+
+        assertThat(s.cliSessionId).isEqualTo(prior)
+        assertThat(Files.exists(claudeTranscripts.transcriptPath(s.cwd, prior))).isFalse()
+        verify {
+            tmux.newSession(
+                s.tmuxSession,
+                match { cmd ->
+                    cmd.contains("--session-id") &&
+                        cmd[cmd.indexOf("--session-id") + 1] == prior &&
+                        !cmd.contains("--resume")
                 },
                 tmp.resolve("workspace").toString(),
             )

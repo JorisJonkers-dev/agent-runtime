@@ -51,6 +51,7 @@ class AgentSessionManager(
     private val transcriptStore: TranscriptStore,
     private val telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
     private val observationRegistry: ObservationRegistry = ObservationRegistry.NOOP,
+    private val claudeTranscriptLocator: ClaudeTranscriptLocator = ClaudeTranscriptLocator.fromEnvironment(),
 ) {
     private val log = LoggerFactory.getLogger(AgentSessionManager::class.java)
     private val sessions = ConcurrentHashMap<String, AgentSession>()
@@ -194,7 +195,7 @@ class AgentSessionManager(
 
             val codexHome = if (kind == AgentKind.CODEX) codexSessionHome(durableStableSessionId) else null
             codexHome?.let(::prepareCodexHome)
-            val (command, commandCliSessionId) = commandAndSessionIdFor(kind, resumeCliSessionId, codexHome)
+            val (command, commandCliSessionId) = commandAndSessionIdFor(kind, cwd, resumeCliSessionId, codexHome)
             try {
                 tmux.newSession(tmuxSession, command, cwd)
                 tmux.startPipeToFile(tmuxSession, logFile)
@@ -527,10 +528,10 @@ class AgentSessionManager(
      * For Claude: on a fresh start a new UUID is passed as `--session-id
      * <uuid>` so the CLI process has a stable native identity without
      * inheriting another conversation. On revival ([resumeCliSessionId]
-     * set) the prior conversation is resumed via `--resume <id>` and that
-     * same id is returned, keeping the persisted cliSessionId stable across
-     * epochs — otherwise the terminal replays old bytes while the model
-     * starts blank.
+     * set) the prior conversation is resumed via `--resume <id>` only when
+     * Claude's local transcript still exists under ~/.claude/projects for
+     * this cwd; otherwise `--session-id <id>` starts fresh while preserving
+     * the persisted native id across epochs.
      *
      * For Codex: Codex has no `--session-id` to pre-set, so each session
      * runs under its own [codexHome] (auth/config symlinked in by
@@ -546,6 +547,7 @@ class AgentSessionManager(
      */
     private fun commandAndSessionIdFor(
         kind: AgentKind,
+        cwd: String,
         resumeCliSessionId: String? = null,
         codexHome: Path? = null,
     ): Pair<List<String>, String?> =
@@ -553,10 +555,20 @@ class AgentSessionManager(
             AgentKind.CLAUDE -> {
                 val cliSessionId = resumeCliSessionId ?: UUID.randomUUID().toString()
                 val sessionArgs =
-                    if (resumeCliSessionId != null) {
+                    if (resumeCliSessionId == null) {
+                        listOf("--session-id", cliSessionId)
+                    } else if (claudeTranscriptLocator.transcriptExists(cwd, resumeCliSessionId)) {
+                        log.info(
+                            "claude revival selected resume sessionId={} reason=transcript-exists",
+                            resumeCliSessionId,
+                        )
                         listOf("--resume", resumeCliSessionId)
                     } else {
-                        listOf("--session-id", cliSessionId)
+                        log.info(
+                            "claude revival selected fresh-with-stable-id sessionId={} reason=transcript-missing",
+                            resumeCliSessionId,
+                        )
+                        listOf("--session-id", resumeCliSessionId)
                     }
                 (listOf(props.cli.claude) + props.cli.claudeArgs + sessionArgs) to cliSessionId
             }
