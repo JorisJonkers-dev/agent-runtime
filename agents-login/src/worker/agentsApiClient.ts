@@ -88,10 +88,11 @@ export function payloadForApi(provider: Provider, bundle: CredentialBundle): Rec
 
   const authJson = bundle.data.auth_json
   const configToml = bundle.data.config_toml
-  if (!authJson || !configToml) {
+  if (!authJson) {
     throw new Error('no Codex credential captured')
   }
-  return { auth_json: authJson, config_toml: configToml }
+  // config_toml is optional (codex login does not write it); include when present.
+  return { auth_json: authJson, ...(configToml ? { config_toml: configToml } : {}) }
 }
 
 async function safeText(res: Response): Promise<string> {

@@ -146,16 +146,19 @@ export async function captureCodex(
 ): Promise<CredentialBundle> {
   const authPath = join(paths.codexHome, 'auth.json')
   const configPath = join(paths.codexHome, 'config.toml')
-  const [auth, config] = await Promise.all([readUtf8(authPath), readUtf8(configPath)])
-  return {
-    data: {
-      auth_json: auth,
-      config_toml: config,
-      schema_version: SCHEMA_VERSION,
-      updated_at: now().toISOString(),
-      updated_by: updatedBy,
-    },
+  // `codex login` writes auth.json (the credential) but NOT config.toml, so
+  // config.toml is optional — requiring it threw ENOENT and broke sign-in.
+  const [auth, config] = await Promise.all([readUtf8(authPath), readUtf8OrUndefined(configPath)])
+  const data: Record<string, string> = {
+    auth_json: auth,
+    schema_version: SCHEMA_VERSION,
+    updated_at: now().toISOString(),
+    updated_by: updatedBy,
   }
+  if (config !== undefined) {
+    data.config_toml = config
+  }
+  return { data }
 }
 
 export async function capture(

@@ -120,7 +120,12 @@ describe('AgentsApiClient', () => {
 
   it('rejects incomplete provider payloads before posting', () => {
     expect(() => payloadForApi('claude', { data: { account_json: '{}' } })).toThrow(/Claude credentials_json/)
-    expect(() => payloadForApi('codex', { data: { auth_json: '{}' } })).toThrow(/Codex credential/)
+    // Codex requires auth_json; config_toml is optional (codex login never writes it).
+    expect(() => payloadForApi('codex', { data: { config_toml: 'x = 1' } })).toThrow(/Codex credential/)
+  })
+
+  it('posts a codex payload with auth_json alone (config_toml optional)', () => {
+    expect(payloadForApi('codex', { data: { auth_json: '{"tokens":"t"}' } })).toEqual({ auth_json: '{"tokens":"t"}' })
   })
 
   it('reports only unknown local stored status', () => {
