@@ -165,7 +165,7 @@ class AgentSessionManager(
         try {
             val id = UUID.randomUUID().toString().substring(0, 8)
             val tmuxSession = "agent-$id"
-            val cwd = workspacePath ?: props.workspaceRoot
+            val requestedCwd = workspacePath ?: props.workspaceRoot
             val durableStableSessionId =
                 stableSessionId?.let(transcriptStore::validateStableSessionId)
                     ?: UUID.randomUUID().toString()
@@ -195,9 +195,9 @@ class AgentSessionManager(
 
             val codexHome = if (kind == AgentKind.CODEX) codexSessionHome(durableStableSessionId) else null
             codexHome?.let(::prepareCodexHome)
-            val (command, commandCliSessionId) = commandAndSessionIdFor(kind, cwd, resumeCliSessionId, codexHome)
+            val launch = commandAndSessionIdFor(kind, requestedCwd, resumeCliSessionId, codexHome)
             try {
-                tmux.newSession(tmuxSession, command, cwd)
+                tmux.newSession(tmuxSession, launch.command, launch.cwd)
                 tmux.startPipeToFile(tmuxSession, logFile)
             } catch (e: IOException) {
                 transcriptStore.releaseLease(lease)
@@ -220,7 +220,7 @@ class AgentSessionManager(
             // session start; capture it from the isolated home (fresh case).
             // Claude and Codex-resume already know their id at build time.
             val cliSessionId =
-                commandCliSessionId
+                launch.cliSessionId
                     ?: codexHome?.takeIf { kind == AgentKind.CODEX }?.let(::captureCodexSessionId)
 
             val session =
@@ -229,7 +229,7 @@ class AgentSessionManager(
                     kind = kind,
                     tmuxSession = tmuxSession,
                     logFile = logFile,
-                    cwd = cwd,
+                    cwd = launch.cwd,
                     createdAt = Instant.now(),
                     cliSessionId = cliSessionId,
                     stableSessionId = durableStableSessionId,
@@ -245,7 +245,7 @@ class AgentSessionManager(
                 kind,
                 id,
                 tmuxSession,
-                cwd,
+                launch.cwd,
                 cliSessionId,
                 durableStableSessionId,
                 durableEpoch,
@@ -550,17 +550,21 @@ class AgentSessionManager(
         cwd: String,
         resumeCliSessionId: String? = null,
         codexHome: Path? = null,
-    ): Pair<List<String>, String?> =
+    ): AgentCommand =
         when (kind) {
             AgentKind.CLAUDE -> {
                 val cliSessionId = resumeCliSessionId ?: UUID.randomUUID().toString()
+                val transcript = resumeCliSessionId?.let { claudeTranscriptLocator.findTranscript(cwd, it) }
                 val sessionArgs =
                     if (resumeCliSessionId == null) {
                         listOf("--session-id", cliSessionId)
-                    } else if (claudeTranscriptLocator.transcriptExists(cwd, resumeCliSessionId)) {
+                    } else if (transcript != null) {
                         log.info(
-                            "claude revival selected resume sessionId={} reason=transcript-exists",
+                            "claude revival selected resume sessionId={} reason=transcript-exists " +
+                                "requestedCwd={} transcriptCwd={}",
                             resumeCliSessionId,
+                            cwd,
+                            transcript.cwd,
                         )
                         listOf("--resume", resumeCliSessionId)
                     } else {
@@ -570,16 +574,29 @@ class AgentSessionManager(
                         )
                         listOf("--session-id", resumeCliSessionId)
                     }
-                (listOf(props.cli.claude) + props.cli.claudeArgs + sessionArgs) to cliSessionId
+                AgentCommand(
+                    command = listOf(props.cli.claude) + props.cli.claudeArgs + sessionArgs,
+                    cliSessionId = cliSessionId,
+                    cwd = transcript?.cwd ?: cwd,
+                )
             }
             AgentKind.CODEX -> {
                 // `env CODEX_HOME=<home>` scopes this session's rollouts
                 // independently of the shared tmux server environment.
                 val envPrefix = codexHome?.let { listOf("env", "CODEX_HOME=$it") } ?: emptyList()
                 val resumeArgs = resumeCliSessionId?.let { listOf("resume", it) } ?: emptyList()
-                (envPrefix + listOf(props.cli.codex) + props.cli.codexArgs + resumeArgs) to resumeCliSessionId
+                AgentCommand(
+                    command = envPrefix + listOf(props.cli.codex) + props.cli.codexArgs + resumeArgs,
+                    cliSessionId = resumeCliSessionId,
+                    cwd = cwd,
+                )
             }
-            AgentKind.SHELL -> listOf("/bin/bash", "-l") to null
+            AgentKind.SHELL ->
+                AgentCommand(
+                    command = listOf("/bin/bash", "-l"),
+                    cliSessionId = null,
+                    cwd = cwd,
+                )
         }
 
     private fun codexSessionHome(stableSessionId: String): Path =
@@ -659,4 +676,10 @@ class AgentSessionManager(
         private val STAGED_INPUT_TIMESTAMP =
             DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS").withZone(ZoneOffset.UTC)
     }
+
+    private data class AgentCommand(
+        val command: List<String>,
+        val cliSessionId: String?,
+        val cwd: String,
+    )
 }

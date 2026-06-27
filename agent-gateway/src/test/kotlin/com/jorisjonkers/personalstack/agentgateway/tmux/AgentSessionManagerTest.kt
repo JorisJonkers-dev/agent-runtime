@@ -230,6 +230,39 @@ class AgentSessionManagerTest {
     }
 
     @Test
+    fun `spawn resumes claude from transcript cwd when revival request omits original workspacePath`(
+        @TempDir tmp: Path,
+    ) {
+        val claudeTranscripts = ClaudeTranscriptLocator(tmp.resolve("claude/projects"))
+        val originalCwd = tmp.resolve("workspace/repo.with.dots")
+        Files.createDirectories(originalCwd)
+        val prior = "11111111-2222-4333-8444-555555555555"
+        val transcript = claudeTranscripts.transcriptPath(originalCwd.toString(), prior)
+        Files.createDirectories(transcript.parent)
+        Files.writeString(
+            transcript,
+            """{"sessionId":"$prior","cwd":${jsonString(originalCwd.toString())}}""" + "\n",
+        )
+        val mgr = manager(tmp, claudeTranscriptLocator = claudeTranscripts)
+
+        val s = mgr.spawn(AgentKind.CLAUDE, resumeCliSessionId = prior)
+
+        assertThat(s.cliSessionId).isEqualTo(prior)
+        assertThat(s.cwd).isEqualTo(originalCwd.toString())
+        verify {
+            tmux.newSession(
+                s.tmuxSession,
+                match { cmd ->
+                    cmd.contains("--resume") &&
+                        cmd[cmd.indexOf("--resume") + 1] == prior &&
+                        !cmd.contains("--session-id")
+                },
+                originalCwd.toString(),
+            )
+        }
+    }
+
+    @Test
     fun `spawn starts fresh claude conversation with stable cliSessionId when transcript is missing on revival`(
         @TempDir tmp: Path,
     ) {
@@ -672,6 +705,8 @@ class AgentSessionManagerTest {
         listOf(operation.label, kind.label, mode.label, outcome.label, reason.label)
 
     private fun GatewayActiveSessionsSample.labels(): List<String> = listOf(status.label, kind.label, mode.label)
+
+    private fun jsonString(value: String): String = "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
     private class RecordingTelemetry : AgentGatewayTelemetry {
         val operations = CopyOnWriteArrayList<GatewayOperationTelemetry>()
