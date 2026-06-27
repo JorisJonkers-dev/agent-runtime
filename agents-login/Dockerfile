@@ -24,6 +24,15 @@ RUN npm run build \
 # ---- runtime stage --------------------------------------------------------
 FROM node:22-bookworm-slim AS runtime
 
+# CA certificates: the bookworm-slim base ships none, and the Codex CLI is a
+# Rust binary that verifies TLS against the SYSTEM root store (not a bundled
+# one like Node). Without this, every codex HTTPS call — including
+# `codex login --device-auth` to auth.openai.com — fails with "error sending
+# request". Node/Claude work regardless because they bundle their own roots.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 # Pinned CLI versions. Keep these in lockstep with the agent-runner image so the
 # captured credential schema always matches what the runners consume.
 ARG CLAUDE_CODE_VERSION=2.1.186
