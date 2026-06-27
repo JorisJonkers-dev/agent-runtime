@@ -107,6 +107,143 @@ repo_dir_name() {
   basename "$1" .git
 }
 
+agent_repository_block_begin='<!-- BEGIN AGENT REPOSITORIES (auto-generated; do not edit this block) -->'
+agent_repository_block_end='<!-- END AGENT REPOSITORIES -->'
+
+append_agent_repository_record() {
+  _agent_repo_url="$1"
+  _agent_repo_name="$(repo_dir_name "$_agent_repo_url")"
+  _agent_repo_path="${WORKSPACE_ROOT}/${_agent_repo_name}"
+
+  if [ -d "${_agent_repo_path}/.git" ]; then
+    printf '%s\t%s\t%s\n' "$_agent_repo_name" "$_agent_repo_url" "$_agent_repo_path" \
+      >> "$_agent_repo_list_tmp"
+  fi
+}
+
+write_agent_workspace_guidance_file() {
+  _agent_guidance_file="$1"
+  _agent_guidance_block="$2"
+  _agent_guidance_tmp="$(mktemp)" || return 1
+
+  if [ -f "$_agent_guidance_file" ]; then
+    if grep -Fq "$agent_repository_block_begin" "$_agent_guidance_file" &&
+       grep -Fq "$agent_repository_block_end" "$_agent_guidance_file"; then
+      awk \
+        -v begin="$agent_repository_block_begin" \
+        -v end="$agent_repository_block_end" \
+        -v block="$_agent_guidance_block" '
+          $0 == begin {
+            while ((getline line < block) > 0) {
+              print line
+            }
+            close(block)
+            in_managed_block = 1
+            next
+          }
+          $0 == end {
+            in_managed_block = 0
+            next
+          }
+          in_managed_block { next }
+          { print }
+        ' "$_agent_guidance_file" > "$_agent_guidance_tmp" || {
+          rm -f "$_agent_guidance_tmp"
+          return 1
+        }
+    else
+      {
+        cat "$_agent_guidance_file"
+        printf '\n\n'
+        cat "$_agent_guidance_block"
+      } > "$_agent_guidance_tmp" || {
+        rm -f "$_agent_guidance_tmp"
+        return 1
+      }
+    fi
+  else
+    {
+      cat <<EOF
+# Agent Workspace
+
+This is a multi-repo agent workspace.
+Each top-level subdirectory under /workspace is a separate git repository agents may work in.
+Read each repository's own CLAUDE.md, AGENTS.md, and README files before making changes.
+Keep changes scoped to the repository they belong to.
+Make separate commits per repository when committing work.
+Use the repository list below as the canonical boot-time workspace map.
+
+EOF
+      cat "$_agent_guidance_block"
+    } > "$_agent_guidance_tmp" || {
+      rm -f "$_agent_guidance_tmp"
+      return 1
+    }
+  fi
+
+  mv "$_agent_guidance_tmp" "$_agent_guidance_file" || {
+    rm -f "$_agent_guidance_tmp"
+    return 1
+  }
+}
+
+generate_agent_repository_manifest() {
+  _agent_repo_manifest="${WORKSPACE_ROOT}/.agent-repositories"
+  _agent_repo_list_tmp="$(mktemp)" || return 1
+  _agent_repo_block_tmp="$(mktemp)" || {
+    rm -f "$_agent_repo_list_tmp"
+    return 1
+  }
+
+  : > "$_agent_repo_list_tmp" || {
+    rm -f "$_agent_repo_list_tmp" "$_agent_repo_block_tmp"
+    return 1
+  }
+
+  if [ -n "${REPO_URL:-}" ]; then
+    append_agent_repository_record "$REPO_URL" || {
+      rm -f "$_agent_repo_list_tmp" "$_agent_repo_block_tmp"
+      return 1
+    }
+  fi
+
+  for _agent_repo_entry in $(printf '%s' "${REPO_URLS:-}" | tr ';\n' '  '); do
+    append_agent_repository_record "${_agent_repo_entry%%#*}" || {
+      rm -f "$_agent_repo_list_tmp" "$_agent_repo_block_tmp"
+      return 1
+    }
+  done
+
+  cp "$_agent_repo_list_tmp" "$_agent_repo_manifest" || {
+    rm -f "$_agent_repo_list_tmp" "$_agent_repo_block_tmp"
+    return 1
+  }
+
+  {
+    printf '%s\n' "$agent_repository_block_begin"
+    if [ -s "$_agent_repo_list_tmp" ]; then
+      awk -F '\t' '{ printf "- **%s** — `%s` — %s\n", $1, $3, $2 }' "$_agent_repo_list_tmp"
+    else
+      printf '%s\n' "- No repositories are currently cloned in this workspace."
+    fi
+    printf '%s\n' "$agent_repository_block_end"
+  } > "$_agent_repo_block_tmp" || {
+    rm -f "$_agent_repo_list_tmp" "$_agent_repo_block_tmp"
+    return 1
+  }
+
+  write_agent_workspace_guidance_file "${WORKSPACE_ROOT}/CLAUDE.md" "$_agent_repo_block_tmp" || {
+    rm -f "$_agent_repo_list_tmp" "$_agent_repo_block_tmp"
+    return 1
+  }
+  write_agent_workspace_guidance_file "${WORKSPACE_ROOT}/AGENTS.md" "$_agent_repo_block_tmp" || {
+    rm -f "$_agent_repo_list_tmp" "$_agent_repo_block_tmp"
+    return 1
+  }
+
+  rm -f "$_agent_repo_list_tmp" "$_agent_repo_block_tmp"
+}
+
 # The credential-helper allow-list: owner/repo slugs for the primary REPO_URL
 # plus every REPO_URLS entry ("url[#branch]"). Bounding the helper to exactly
 # the workspace's repos keeps the App token's blast radius the same as the old
@@ -270,6 +407,64 @@ fi
 
 if [ "${AGENT_RUNNER_ENTRYPOINT_SELF_TEST:-}" = "repo-dir" ]; then
   repo_dir_name "${REPO_URL:-}"
+  exit 0
+fi
+
+if [ "${AGENT_RUNNER_ENTRYPOINT_SELF_TEST:-}" = "repo-manifest" ]; then
+  _self_test_root="$(mktemp -d)"
+  trap 'rm -rf "$_self_test_root"' EXIT
+  WORKSPACE_ROOT="$_self_test_root"
+  REPO_URL="https://github.com/example/primary.git"
+  REPO_URLS="git@github.com:example/extra-one.git#feature;https://github.com/example/extra-two.git#main https://github.com/example/missing.git"
+  export WORKSPACE_ROOT REPO_URL REPO_URLS
+
+  mkdir -p \
+    "$WORKSPACE_ROOT/primary/.git" \
+    "$WORKSPACE_ROOT/extra-one/.git" \
+    "$WORKSPACE_ROOT/extra-two/.git"
+  cat > "$WORKSPACE_ROOT/CLAUDE.md" <<EOF
+# Custom Claude Header
+
+Keep this user-authored note.
+
+$agent_repository_block_begin
+- stale entry
+$agent_repository_block_end
+
+Tail text stays.
+EOF
+
+  if ! generate_agent_repository_manifest; then
+    echo "[entrypoint] self-test repo-manifest failed"
+    exit 1
+  fi
+  _self_test_snapshot="$(mktemp)"
+  cat "$WORKSPACE_ROOT/.agent-repositories" "$WORKSPACE_ROOT/CLAUDE.md" "$WORKSPACE_ROOT/AGENTS.md" \
+    > "$_self_test_snapshot"
+  if ! generate_agent_repository_manifest; then
+    rm -f "$_self_test_snapshot"
+    echo "[entrypoint] self-test repo-manifest failed on idempotence run"
+    exit 1
+  fi
+  _self_test_after="$(mktemp)"
+  cat "$WORKSPACE_ROOT/.agent-repositories" "$WORKSPACE_ROOT/CLAUDE.md" "$WORKSPACE_ROOT/AGENTS.md" \
+    > "$_self_test_after"
+  if cmp -s "$_self_test_snapshot" "$_self_test_after"; then
+    _self_test_idempotent=yes
+  else
+    _self_test_idempotent=no
+  fi
+  rm -f "$_self_test_snapshot" "$_self_test_after"
+
+  printf '%s\n' "workspace=$WORKSPACE_ROOT"
+  printf '%s\n' ".agent-repositories:"
+  sed -n '1,20p' "$WORKSPACE_ROOT/.agent-repositories"
+  printf '%s\n' "CLAUDE.md:"
+  sed -n '1,40p' "$WORKSPACE_ROOT/CLAUDE.md"
+  printf '%s\n' "AGENTS.md:"
+  sed -n '1,40p' "$WORKSPACE_ROOT/AGENTS.md"
+  printf '%s\n' "idempotent=$_self_test_idempotent"
+  [ "$_self_test_idempotent" = "yes" ]
   exit 0
 fi
 
@@ -590,6 +785,7 @@ if [ -n "${REPO_URLS:-}" ]; then
 fi
 
 speckit_seed_workspace
+generate_agent_repository_manifest || echo "[entrypoint] WARN: failed to generate repository manifest and workspace guidance"
 
 unset CLAUDE_CODE_OAUTH_TOKEN
 
