@@ -49,8 +49,16 @@ describe('credential capture', () => {
   it('rejects stdout-only Claude OAuth tokens without the full credentials file', async () => {
     const token = 'sk-ant-oat01-abcDEF123456_-789ghiJKLmnop'
     await expect(captureClaude({ home, codexHome }, 'alice', fixedNow, token)).rejects.toThrow(
-      /credentials\.json was not written/,
+      /no Claude credential captured/,
     )
+  })
+
+  it('rejects an empty {} credentials file (created-but-not-yet-populated race)', async () => {
+    // Claude creates .credentials.json then writes the token a moment later;
+    // capturing the empty {} left the runner stuck on "Not logged in" / API billing.
+    writeFileSync(join(home, '.claude', '.credentials.json'), '{}')
+    writeFileSync(join(home, '.claude.json'), '{"oauthAccount":{"billingType":"stripe_subscription"}}')
+    await expect(captureClaude({ home, codexHome }, 'alice', fixedNow)).rejects.toThrow(/no Claude credential captured/)
   })
 
   it('parses the optional back-compat token from credentials_json', async () => {
@@ -80,7 +88,8 @@ describe('credential capture', () => {
   })
 
   it('omits account_json when .claude.json has no oauthAccount', async () => {
-    const credentialsJson = '{"claudeAiOauth":{"refreshToken":"refresh-token"}}'
+    const credentialsJson =
+      '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-PopulatedToken1234567890","refreshToken":"refresh-token"}}'
     const dotClaudeJson = '{"installMethod":"global"}'
     writeFileSync(join(home, '.claude', '.credentials.json'), credentialsJson)
     writeFileSync(join(home, '.claude.json'), dotClaudeJson)
@@ -90,7 +99,7 @@ describe('credential capture', () => {
     expect(bundle.data['credentials_json']).toBe(credentialsJson)
     expect(bundle.data['claude_json']).toBe(dotClaudeJson)
     expect(bundle.data).not.toHaveProperty('account_json')
-    expect(bundle.data).not.toHaveProperty('oauth_token')
+    expect(bundle.data.oauth_token).toBe('sk-ant-oat01-PopulatedToken1234567890')
   })
 
   it('fails when no credentials file is available', async () => {

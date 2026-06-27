@@ -540,7 +540,7 @@ describe('LoginSession state machine', () => {
     await tick()
     expect(mgr.submitRedirectUrl(started.id, 'paste-code-xyz').ok).toBe(true)
     expect(await waitPhase(mgr, started.id, ['succeeded', 'failed'])).toBe('failed')
-    expect(mgr.status(started.id)!.error).toMatch(/credentials\.json was not written/)
+    expect(mgr.status(started.id)!.error).toMatch(/no Claude credential captured/)
     expect(agentsApi.posts).toEqual([])
   })
 

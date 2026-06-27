@@ -5,7 +5,7 @@ import type { Logger } from '../shared/log.js'
 import { redactString } from '../shared/redact.js'
 import type { Provider, SessionPhase, SessionStatus } from '../shared/types.js'
 import { isTerminal } from '../shared/types.js'
-import { capture, readClaudeCredentialsJson, type CredentialPaths } from './credentials.js'
+import { capture, claudeCredentialIsPopulated, readClaudeCredentialsJson, type CredentialPaths } from './credentials.js'
 import {
   detectClaudeCodePrompt,
   detectClaudeLoggedOutRepl,
@@ -408,7 +408,15 @@ export class LoginSession {
       )
     }
     if (detectSuccess(this.provider, this.buffer)) {
-      void this.finalize(updatedBy, claudeTokenCaptured, 'CLI success output detected')
+      // For Claude's subscription login the success line ("Logged in as") can
+      // appear before Claude finishes writing the token into .credentials.json.
+      // Finalizing here would capture an empty {} (race). Defer to the credential
+      // probe, which only finalizes once the file carries claudeAiOauth.accessToken.
+      if (this.provider === 'claude' && !claudeTokenCaptured) {
+        void this.probeClaudeCredentialFile('CLI success output detected')
+      } else {
+        void this.finalize(updatedBy, claudeTokenCaptured, 'CLI success output detected')
+      }
       return
     }
     if (this.provider === 'claude' && this.redirectSubmitted) {
@@ -621,14 +629,18 @@ export class LoginSession {
     }
     try {
       const credentialsJson = await readClaudeCredentialsJson(this.deps.paths)
+      const populated = claudeCredentialIsPopulated(credentialsJson)
       this.deps.logger.info('Claude credential file parse attempt', {
         sessionId: this.id,
         source: '$HOME/.claude/.credentials.json',
-        matched: credentialsJson !== undefined,
+        exists: credentialsJson !== undefined,
+        populated,
         reason,
       })
-      if (credentialsJson !== undefined) {
-        await this.finalize(this.updatedBy, undefined, 'Claude credentials file detected')
+      // Only finalize once the token is actually written. An existing-but-empty
+      // file ({} during Claude's create-then-populate) keeps us polling.
+      if (populated) {
+        await this.finalize(this.updatedBy, undefined, 'Claude credentials file populated')
         return
       }
     } catch (err) {

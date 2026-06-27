@@ -31,6 +31,17 @@ export async function readClaudeCredentialsJson(paths: CredentialPaths): Promise
   return readUtf8OrUndefined(join(paths.home, '.claude', '.credentials.json'))
 }
 
+/**
+ * True only when `.credentials.json` actually carries an OAuth token. Claude
+ * creates the file and populates `claudeAiOauth.accessToken` a moment later, so
+ * a probe that fires on mere file existence captures an empty `{}` (the runner
+ * then has no token and shows "Not logged in" / API billing). Gate capture on
+ * this so the worker waits for the populated credential.
+ */
+export function claudeCredentialIsPopulated(content: string | undefined): content is string {
+  return content !== undefined && extractClaudeOauthToken(content) !== undefined
+}
+
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -96,8 +107,10 @@ export async function captureClaude(
     readUtf8OrUndefined(credsPath),
     readUtf8OrUndefined(dotClaudePath),
   ])
-  if (credentials === undefined) {
-    throw new Error('no Claude credential captured: .credentials.json was not written')
+  if (!claudeCredentialIsPopulated(credentials)) {
+    throw new Error(
+      'no Claude credential captured: .credentials.json missing claudeAiOauth.accessToken (not written yet)',
+    )
   }
   const capturedToken = extractClaudeOauthToken(credentials)
   const data: Record<string, string> = {
