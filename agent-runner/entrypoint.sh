@@ -86,6 +86,13 @@ prepare_injected_credentials() {
   fi
 }
 
+backup_claude_json() {
+  if [ -f "$HOME/.claude.json" ]; then
+    mkdir -p "$HOME/.claude/backups"
+    cp "$HOME/.claude.json" "$HOME/.claude/backups/.claude.json.backup.$(date +%s)" 2>/dev/null || true
+  fi
+}
+
 # Strip a GitHub remote (ssh or https) down to its owner/repo slug.
 repo_slug() {
   printf '%s' "$1" | sed \
@@ -301,16 +308,15 @@ export GIT_TERMINAL_PROMPT=0
 
 # Restore ~/.claude.json from the latest PVC-backed backup if the
 # runtime file is missing. Claude Code keeps OAuth tokens in
-# ~/.claude/.credentials.json (lives on claude-credentials PVC, so
-# survives Pod restarts) but its user config — including the
+# ~/.claude/.credentials.json (injected from the per-workspace Secret
+# each boot) but its user config — including the
 # org/project bindings without which `claude -p` refuses to run —
 # sits at ~/.claude.json (sibling of ~/.claude/, in the container's
 # writable layer, lost on every restart). Claude itself writes a
 # rolling backup to ~/.claude/backups/.claude.json.backup.<ts> on
-# every config write, which DOES land on the PVC, so the post-
-# bootstrap behaviour is "every fresh Pod has a backup it can
-# restore from". This snippet performs that restore. The latest
-# backup wins so token-refresh updates propagate forward.
+# every config write, which lands on the workspace PVC-backed backups
+# subPath. This snippet performs that restore. The latest backup wins
+# so token-refresh updates propagate forward.
 if [ ! -f "$HOME/.claude.json" ] && [ -d "$HOME/.claude/backups" ]; then
   latest=$(ls -1t "$HOME/.claude/backups"/.claude.json.backup.* 2>/dev/null | head -n1 || true)
   if [ -n "$latest" ]; then
@@ -319,12 +325,13 @@ if [ ! -f "$HOME/.claude.json" ] && [ -d "$HOME/.claude/backups" ]; then
 fi
 
 # Suppress Claude's first-run prompts without clobbering a restored
-# config. The OAuth token persists on the claude-credentials PVC, but
-# the per-user flags that record "theme chosen / onboarding done /
-# directory trusted" live in ~/.claude.json, which is lost on every
-# fresh Pod unless a backup happened to exist. A logged-in CLI that
-# still has theme==undefined or hasCompletedOnboarding!=true re-runs
-# the onboarding wizard (which is also where the theme picker lives),
+# config. The OAuth token is injected from the per-workspace Secret
+# each boot, but the per-user flags that record "theme chosen /
+# onboarding done / directory trusted" live in ~/.claude.json, which
+# is lost on every fresh Pod unless a backup happened to exist. A
+# logged-in CLI that still has theme==undefined or
+# hasCompletedOnboarding!=true re-runs the onboarding wizard (which is
+# also where the theme picker lives),
 # and an untrusted project dir re-shows the trust dialog — both block
 # the non-interactive tmux session. `jq //=` fills only the missing
 # keys, so a real restored config (its own theme, oauthAccount, the
@@ -412,14 +419,15 @@ if [ -f "$MCP_SERVERS_FILE" ]; then
   rm -f "$mcp_rendered"
 fi
 
-# Trust the workspace for Codex the same way. ~/.codex sits on the
-# codex-credentials PVC (CODEX_HOME), so auth.json persists, but a
-# fresh checkout of the workspace dir is "untrusted" until the
-# interactive trust prompt is answered, and the default approval
-# policy stops to ask before each command — both stall the tmux
-# session. Seeding global non-interactive approval/sandbox plus a
+backup_claude_json
+
+# Trust the workspace for Codex the same way. Codex auth/config are
+# injected each boot, but a fresh checkout of the workspace dir is
+# "untrusted" until the interactive trust prompt is answered, and the
+# default approval policy stops to ask before each command — both stall
+# the tmux session. Seeding global non-interactive approval/sandbox plus a
 # per-project trusted entry removes every prompt. Only created when
-# absent so a hand-edited config on the PVC is never overwritten.
+# absent so a hand-edited config is never overwritten during a boot.
 if [ ! -f "$CODEX_HOME/config.toml" ]; then
   mkdir -p "$CODEX_HOME"
   cat > "$CODEX_HOME/config.toml" <<EOF
@@ -443,7 +451,7 @@ fi
 # defence-in-depth (per-app disables are ignored upstream — openai/codex
 # #17588), so removing the connector on the ChatGPT account (see SETUP.md)
 # stays the hard guarantee. Managed each boot so the invariant survives a
-# hand-edited PVC config; the create-once approval/sandbox/trust config and
+# hand-edited config; the create-once approval/sandbox/trust config and
 # any unrelated [features] dotted keys are preserved.
 #
 # Codex reads remote HTTP MCP servers natively and takes the bearer at
