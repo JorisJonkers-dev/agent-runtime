@@ -33,12 +33,6 @@ RUN npm install -g \
       @openai/codex@${CODEX_VERSION} \
   && npm cache clean --force
 
-# Prefer IPv4: the cluster has no working IPv6 egress, but external hosts (e.g.
-# auth.openai.com) publish AAAA records. glibc getaddrinfo (used by codex's Rust
-# HTTP client) otherwise returns IPv6 first and codex fails with ENETUNREACH /
-# "error sending request". Ranking IPv4-mapped addresses first makes codex use IPv4.
-RUN printf 'precedence ::ffff:0:0/96  100\n' > /etc/gai.conf
-
 ENV NODE_ENV=production \
     HOME=/home/agent \
     CODEX_HOME=/home/agent/.codex
