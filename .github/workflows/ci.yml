@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+  packages: read
+  pull-requests: read
+
+env:
+  GITHUB_ACTOR: ${{ github.actor }}
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  RELEASE_APP_CONFIGURED: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+
+jobs:
+  jvm-ci:
+    name: JVM CI
+    uses: JorisJonkers-dev/github-workflows/.github/workflows/jvm-ci.yml@v0.6.1
+    with:
+      gradle-command: ./gradlew
+      lint-gradle-args: :services:agent-gateway:detekt :services:agent-gateway:ktlintCheck
+      test-gradle-args: :services:agent-gateway:test :services:agent-gateway:integrationTest :services:agent-gateway:jacocoTestCoverageVerification :services:agent-gateway:bootJar
+    secrets:
+      packages-token: ${{ secrets.GITHUB_TOKEN }}
+
+  agents-login:
+    name: agents-login
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/agents-login
+    steps:
+      - uses: actions/checkout@v6
+      - uses: JorisJonkers-dev/github-workflows/actions/setup-node@v0.6.1
+        with:
+          node-version: "22"
+          package-manager: npm
+          cache-dependency-path: services/agents-login/package-lock.json
+          working-directory: services/agents-login
+          github-packages-token: ${{ secrets.GITHUB_TOKEN }}
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  runner-shell:
+    name: Runner Shell Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash -n services/agent-runner/*.sh
+      - run: sh -n services/agent-runner/entrypoint.sh
+
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: agent-gateway
+            dockerfile: services/agent-gateway/Dockerfile
+          - image: agent-runner
+            dockerfile: services/agent-runner/Dockerfile
+          - image: agents-login
+            dockerfile: services/agents-login/Dockerfile
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - uses: actions/create-github-app-token@v2
+        id: package-token
+        if: ${{ env.RELEASE_APP_CONFIGURED == 'true' }}
+        continue-on-error: true
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            agent-kit
+            agent-runtime
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          tags: ghcr.io/jorisjonkers-dev/agent-runtime/${{ matrix.image }}:${{ github.sha }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+            github_actor=${{ github.actor }}
+            agent_kit_token=${{ steps.package-token.outputs.token || secrets.GITHUB_TOKEN }}
+            agent_kit_actor=${{ steps.package-token.outputs.app-slug && format('{0}[bot]', steps.package-token.outputs.app-slug) || github.actor }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            AGENT_KIT_RUNTIME_REF=ghcr.io/jorisjonkers-dev/agent-kit/runtime-home:v1.1.0
+            AGENT_KIT_VERSION=v1.1.0
+
+  pipeline-complete:
+    name: Pipeline Complete
+    runs-on: ubuntu-latest
+    needs: [jvm-ci, agents-login, runner-shell, docker-build]
+    if: ${{ always() }}
+    steps:
+      - uses: re-actors/alls-green@release/v1
+        with:
+          jobs: ${{ toJSON(needs) }}
