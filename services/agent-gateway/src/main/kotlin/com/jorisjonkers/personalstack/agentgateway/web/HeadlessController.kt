@@ -75,7 +75,12 @@ class HeadlessController(
     fun cancel(
         @PathVariable id: String,
     ): ResponseEntity<Void> {
-        val response = if (jobs.cancel(id)) ResponseEntity.noContent().build() else ResponseEntity.notFound().build()
+        val response: ResponseEntity<Void> =
+            if (jobs.cancel(id)) {
+                ResponseEntity.noContent().build()
+            } else {
+                ResponseEntity.notFound().build()
+            }
         return response
     }
 

@@ -92,15 +92,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && docker compose version >/dev/null \
     && rm -rf /var/lib/apt/lists/*
 
-RUN --mount=type=secret,id=github_token,required=false \
+RUN --mount=type=secret,id=agent_kit_token,required=false \
+    --mount=type=secret,id=agent_kit_actor,required=false \
+    --mount=type=secret,id=github_token,required=false \
     --mount=type=secret,id=github_actor,required=false \
     set -eu; \
     curl -fsSL https://github.com/oras-project/oras/releases/download/v1.2.3/oras_1.2.3_linux_amd64.tar.gz \
       | tar -xz -C /usr/local/bin oras; \
-    if [ -s /run/secrets/github_token ]; then \
-      github_actor="$(cat /run/secrets/github_actor 2>/dev/null || true)"; \
+    token_file="/run/secrets/agent_kit_token"; \
+    actor_file="/run/secrets/agent_kit_actor"; \
+    if [ ! -s "$token_file" ]; then \
+      token_file="/run/secrets/github_token"; \
+      actor_file="/run/secrets/github_actor"; \
+    fi; \
+    if [ -s "$token_file" ]; then \
+      github_actor="$(cat "$actor_file" 2>/dev/null || true)"; \
       if [ -z "$github_actor" ]; then github_actor="x-access-token"; fi; \
-      oras login ghcr.io --username "$github_actor" --password-stdin < /run/secrets/github_token || true; \
+      oras login ghcr.io --username "$github_actor" --password-stdin < "$token_file" || true; \
     fi; \
     runtime_ref="${AGENT_KIT_RUNTIME_REF}${AGENT_KIT_RUNTIME_DIGEST:+@${AGENT_KIT_RUNTIME_DIGEST}}"; \
     mkdir -p /tmp/agent-kit-runtime /opt/agent-kit; \

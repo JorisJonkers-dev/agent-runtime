@@ -87,8 +87,10 @@ jobs:
             ghcr.io/jorisjonkers-dev/agent-runtime/${{ matrix.image }}:${{ needs.release-please.outputs.tag_name }}
             ghcr.io/jorisjonkers-dev/agent-runtime/${{ matrix.image }}:sha-${{ github.sha }}
           secrets: |
-            github_token=${{ steps.package-token.outputs.token || secrets.GITHUB_TOKEN }}
-            github_actor=${{ steps.package-token.outputs.app-slug && format('{0}[bot]', steps.package-token.outputs.app-slug) || github.actor }}
+            github_token=${{ secrets.GITHUB_TOKEN }}
+            github_actor=${{ github.actor }}
+            agent_kit_token=${{ steps.package-token.outputs.token || secrets.GITHUB_TOKEN }}
+            agent_kit_actor=${{ steps.package-token.outputs.app-slug && format('{0}[bot]', steps.package-token.outputs.app-slug) || github.actor }}
           build-args: |
             GIT_SHA=${{ github.sha }}
             AGENT_KIT_RUNTIME_REF=ghcr.io/jorisjonkers-dev/agent-kit/runtime-home:v1.1.0
