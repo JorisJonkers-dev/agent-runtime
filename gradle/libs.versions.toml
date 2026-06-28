@@ -1,0 +1,27 @@
+[versions]
+jorisjonkers-commons = "0.7.0"
+jorisjonkers-conventions = "0.5.0"
+
+[libraries]
+kotlin-commons-archunit-test = { module = "dev.jorisjonkers:kotlin-commons-archunit-test", version.ref = "jorisjonkers-commons" }
+kotlin-commons-blocks = { module = "dev.jorisjonkers:kotlin-commons-blocks", version.ref = "jorisjonkers-commons" }
+kotlin-commons-command = { module = "dev.jorisjonkers:kotlin-commons-command", version.ref = "jorisjonkers-commons" }
+kotlin-commons-crac = { module = "dev.jorisjonkers:kotlin-commons-crac", version.ref = "jorisjonkers-commons" }
+kotlin-commons-email = { module = "dev.jorisjonkers:kotlin-commons-email", version.ref = "jorisjonkers-commons" }
+kotlin-commons-events = { module = "dev.jorisjonkers:kotlin-commons-events", version.ref = "jorisjonkers-commons" }
+kotlin-commons-exceptions = { module = "dev.jorisjonkers:kotlin-commons-exceptions", version.ref = "jorisjonkers-commons" }
+kotlin-commons-messaging = { module = "dev.jorisjonkers:kotlin-commons-messaging", version.ref = "jorisjonkers-commons" }
+kotlin-commons-observability = { module = "dev.jorisjonkers:kotlin-commons-observability", version.ref = "jorisjonkers-commons" }
+kotlin-commons-test-support = { module = "dev.jorisjonkers:kotlin-commons-test-support", version.ref = "jorisjonkers-commons" }
+kotlin-commons-timing = { module = "dev.jorisjonkers:kotlin-commons-timing", version.ref = "jorisjonkers-commons" }
+kotlin-commons-vault = { module = "dev.jorisjonkers:kotlin-commons-vault", version.ref = "jorisjonkers-commons" }
+kotlin-commons-web = { module = "dev.jorisjonkers:kotlin-commons-web", version.ref = "jorisjonkers-commons" }
+
+[plugins]
+jorisjonkers-kotlin = { id = "dev.jorisjonkers.kotlin", version.ref = "jorisjonkers-conventions" }
+jorisjonkers-detekt = { id = "dev.jorisjonkers.detekt", version.ref = "jorisjonkers-conventions" }
+jorisjonkers-ktlint = { id = "dev.jorisjonkers.ktlint", version.ref = "jorisjonkers-conventions" }
+jorisjonkers-spring = { id = "dev.jorisjonkers.spring", version.ref = "jorisjonkers-conventions" }
+jorisjonkers-testing = { id = "dev.jorisjonkers.testing", version.ref = "jorisjonkers-conventions" }
+jorisjonkers-test-logging = { id = "dev.jorisjonkers.test-logging", version.ref = "jorisjonkers-conventions" }
+jorisjonkers-jooq-codegen = { id = "dev.jorisjonkers.jooq-codegen", version.ref = "jorisjonkers-conventions" }
