@@ -1,4 +1,4 @@
-@file:Suppress("LongMethod", "ThrowsCount", "TooGenericExceptionCaught")
+@file:Suppress("LongMethod", "ThrowsCount", "TooGenericExceptionCaught", "TooManyFunctions")
 
 package com.jorisjonkers.personalstack.agentgateway.web
 
@@ -80,7 +80,9 @@ class AgentController(
             // Only the single-agent lookup carries idleMillis — it's the call
             // the control plane polls to decide whether a runner is quiet
             // enough to recycle. The list/create paths skip the extra stat.
-            sessions.get(id)?.let { ResponseEntity.ok(toResponse(it).copy(idleMillis = sessions.idleMillis(id))) }
+            sessions
+                .get(id)
+                ?.let { ResponseEntity.ok(toResponse(it).copy(idleMillis = sessions.idleMillis(id))) }
                 ?: ResponseEntity.notFound().build()
         }
 

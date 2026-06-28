@@ -525,8 +525,12 @@ class AgentAttachHandler(
             else -> GatewayFailureReasonLabel.UNKNOWN
         }
 
-    private fun failureReasonLabel(reason: String?): GatewayFailureReasonLabel = GatewayFailureReasonLabel.fromRaw(reason)
+    private fun failureReasonLabel(reason: String?): GatewayFailureReasonLabel {
+        val rawReason = reason
+        return GatewayFailureReasonLabel.fromRaw(rawReason)
+    }
 
+    @Suppress("ReturnCount")
     override fun handleTextMessage(
         session: WebSocketSession,
         message: TextMessage,
@@ -568,6 +572,7 @@ class AgentAttachHandler(
         }
     }
 
+    @Suppress("ReturnCount")
     private fun agentIdOf(session: WebSocketSession): String? {
         val path = session.uri?.path ?: return null
         val match = Regex("/ws/agents/([^/]+)/attach").find(path) ?: return null

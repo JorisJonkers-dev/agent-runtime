@@ -19,6 +19,7 @@ import kotlin.io.path.Path
  * pipe-pane targeting.
  */
 @Component
+@Suppress("TooManyFunctions")
 class TmuxClient(
     private val runner: ProcessRunner,
     private val props: GatewayProperties,

@@ -23,6 +23,7 @@ import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ScheduledExecutorService
 
+@Suppress("LargeClass")
 class AgentSessionManagerTest {
     private val tmux = mockk<TmuxClient>(relaxed = true)
     private val managers = mutableListOf<AgentSessionManager>()

@@ -638,6 +638,7 @@ class AgentSessionManager(
         return null
     }
 
+    @Suppress("ReturnCount")
     private fun newestRolloutId(sessionsDir: Path): String? {
         if (!Files.isDirectory(sessionsDir)) return null
         val newest =

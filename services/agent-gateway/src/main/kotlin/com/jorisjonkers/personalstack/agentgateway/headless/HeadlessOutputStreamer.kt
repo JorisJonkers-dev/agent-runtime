@@ -107,6 +107,7 @@ class HeadlessOutputStreamer private constructor(
             }
         }
 
+        @Suppress("ReturnCount")
         private fun drainCompleteLines(file: Path) {
             RandomAccessFile(file.toFile(), "r").use { raf ->
                 val length = raf.length()
@@ -146,7 +147,10 @@ class HeadlessOutputStreamer private constructor(
                 raf.length() <= offset.get()
             }
 
-        private fun donePayload(job: HeadlessJob): String = """{"status":"${job.status}","exitCode":${job.exitCode ?: "null"}}"""
+        private fun donePayload(job: HeadlessJob): String {
+            val exitCode = job.exitCode ?: "null"
+            return """{"status":"${job.status}","exitCode":$exitCode}"""
+        }
 
         private fun completeLineBytes(
             raw: ByteArray,

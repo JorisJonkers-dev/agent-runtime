@@ -333,7 +333,10 @@ class HeadlessJobManager(
         )
     }
 
-    private fun jobDuration(job: HeadlessJob): Duration = Duration.between(job.createdAt, job.completedAt ?: Instant.now())
+    private fun jobDuration(job: HeadlessJob): Duration {
+        val completedAt = job.completedAt ?: Instant.now()
+        return Duration.between(job.createdAt, completedAt)
+    }
 
     private fun startFailureReason(ex: Throwable): GatewayFailureReasonLabel =
         when (ex) {

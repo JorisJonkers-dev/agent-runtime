@@ -44,6 +44,7 @@ FROM debian:bookworm-slim
 ARG GIT_SHA=unknown
 ARG AGENT_KIT_RUNTIME_REF=ghcr.io/jorisjonkers-dev/agent-kit/runtime-home:v1.1.0
 ARG AGENT_KIT_RUNTIME_DIGEST
+ARG AGENT_KIT_RELEASE_BASE_URL=https://github.com/JorisJonkers-dev/agent-kit/releases/download
 ARG AGENT_KIT_VERSION=v1.1.0
 ENV SERVICE_VERSION=${GIT_SHA}
 ENV AGENT_KIT_HOME_SOURCE=/opt/agent-kit/home
@@ -99,14 +100,27 @@ RUN --mount=type=secret,id=github_token,required=false \
     if [ -s /run/secrets/github_token ]; then \
       github_actor="$(cat /run/secrets/github_actor 2>/dev/null || true)"; \
       if [ -z "$github_actor" ]; then github_actor="x-access-token"; fi; \
-      oras login ghcr.io --username "$github_actor" --password-stdin < /run/secrets/github_token; \
+      oras login ghcr.io --username "$github_actor" --password-stdin < /run/secrets/github_token || true; \
     fi; \
     runtime_ref="${AGENT_KIT_RUNTIME_REF}${AGENT_KIT_RUNTIME_DIGEST:+@${AGENT_KIT_RUNTIME_DIGEST}}"; \
     mkdir -p /tmp/agent-kit-runtime /opt/agent-kit; \
-    oras pull "$runtime_ref" -o /tmp/agent-kit-runtime; \
-    tar -xzf "/tmp/agent-kit-runtime/agent-kit-runtime-home-${AGENT_KIT_VERSION}.tar.gz" -C /opt/agent-kit; \
+    if ! oras pull "$runtime_ref" -o /tmp/agent-kit-runtime; then \
+      archive="agent-kit-runtime-home-${AGENT_KIT_VERSION}.tar.gz"; \
+      release_url="${AGENT_KIT_RELEASE_BASE_URL}/${AGENT_KIT_VERSION}/${archive}"; \
+      mkdir -p /tmp/agent-kit-runtime/dist; \
+      curl -fsSL "$release_url" -o "/tmp/agent-kit-runtime/dist/${archive}"; \
+      curl -fsSL "${release_url}.sha256" -o "/tmp/agent-kit-runtime/dist/${archive}.sha256"; \
+    fi; \
+    archive_path="$(find /tmp/agent-kit-runtime -name "agent-kit-runtime-home-${AGENT_KIT_VERSION}.tar.gz" -print -quit)"; \
+    checksum_path="$(find /tmp/agent-kit-runtime -name "agent-kit-runtime-home-${AGENT_KIT_VERSION}.tar.gz.sha256" -print -quit)"; \
+    test -n "$archive_path"; \
+    test -n "$checksum_path"; \
+    expected_sha="$(awk '{print $1}' "$checksum_path")"; \
+    actual_sha="$(sha256sum "$archive_path" | awk '{print $1}')"; \
+    test "$actual_sha" = "$expected_sha"; \
+    tar -xzf "$archive_path" -C /opt/agent-kit; \
     cd /opt/agent-kit; \
-    sha256sum -c SHA256SUMS; \
+    grep -v '  ./SHA256SUMS$' SHA256SUMS | sha256sum -c -; \
     rm -rf /tmp/agent-kit-runtime
 
 # Claude Code + Codex CLIs. Both ship via npm; pin to the versions the

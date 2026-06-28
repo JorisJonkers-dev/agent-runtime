@@ -122,6 +122,7 @@ class TranscriptStore
             }
         }
 
+        @Suppress("ReturnCount")
         fun renewLease(lease: TranscriptLease): TranscriptLease? {
             val id = validateStableSessionId(lease.stableSessionId)
             return synchronized(lockFor(id)) {
@@ -364,7 +365,10 @@ class TranscriptStore
 
         private fun segmentsDir(stableSessionId: String): Path = sessionDir(stableSessionId).resolve("segments")
 
-        private fun metadataFile(stableSessionId: String): Path = sessionDir(stableSessionId).resolve("metadata.properties")
+        private fun metadataFile(stableSessionId: String): Path {
+            val dir = sessionDir(stableSessionId)
+            return dir.resolve("metadata.properties")
+        }
 
         private fun leaseFile(stableSessionId: String): Path = sessionDir(stableSessionId).resolve("lease.properties")
 

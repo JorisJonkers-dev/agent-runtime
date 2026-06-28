@@ -27,6 +27,7 @@ class ClaudeTranscriptLocator(
         sessionId: String,
     ): Boolean = findTranscript(cwd, sessionId) != null
 
+    @Suppress("ReturnCount")
     fun findTranscript(
         cwd: String,
         sessionId: String,

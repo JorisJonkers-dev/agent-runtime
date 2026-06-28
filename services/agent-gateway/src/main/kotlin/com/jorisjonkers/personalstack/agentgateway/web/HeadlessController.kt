@@ -74,7 +74,10 @@ class HeadlessController(
     @DeleteMapping("/{id}")
     fun cancel(
         @PathVariable id: String,
-    ): ResponseEntity<Void> = if (jobs.cancel(id)) ResponseEntity.noContent().build() else ResponseEntity.notFound().build()
+    ): ResponseEntity<Void> {
+        val response = if (jobs.cancel(id)) ResponseEntity.noContent().build() else ResponseEntity.notFound().build()
+        return response
+    }
 
     private fun toResponse(
         job: HeadlessJob,

@@ -415,7 +415,10 @@ class HeadlessJobManagerTest {
     private fun GatewayOperationTelemetry.labels(): List<String> =
         listOf(operation.label, kind.label, mode.label, outcome.label, reason.label)
 
-    private fun GatewayActiveSessionsSample.labels(): List<String> = listOf(status.label, kind.label, mode.label, count.toString())
+    private fun GatewayActiveSessionsSample.labels(): List<String> {
+        val labels = listOf(status.label, kind.label, mode.label, count.toString())
+        return labels
+    }
 
     private class RecordingTelemetry : AgentGatewayTelemetry {
         val activeSamples = CopyOnWriteArrayList<GatewayActiveSessionsSample>()

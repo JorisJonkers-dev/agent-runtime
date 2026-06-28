@@ -187,6 +187,7 @@ class AgentControllerTest {
     }
 
     @Test
+    @Suppress("LongMethod")
     fun `records REST terminal outcomes with bounded labels`() {
         val localSessions = mockk<AgentSessionManager>()
         val telemetry = RecordingTelemetry()

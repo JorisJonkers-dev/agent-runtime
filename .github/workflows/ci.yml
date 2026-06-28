@@ -19,6 +19,7 @@ env:
   GITHUB_ACTOR: ${{ github.actor }}
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  RELEASE_APP_CONFIGURED: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
 
 jobs:
   jvm-ci:
@@ -75,6 +76,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4
+      - uses: actions/create-github-app-token@v2
+        id: package-token
+        if: ${{ env.RELEASE_APP_CONFIGURED == 'true' }}
+        continue-on-error: true
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            agent-kit
+            agent-runtime
       - uses: docker/build-push-action@v7
         with:
           context: .
@@ -82,8 +94,8 @@ jobs:
           push: false
           tags: ghcr.io/jorisjonkers-dev/agent-runtime/${{ matrix.image }}:${{ github.sha }}
           secrets: |
-            github_token=${{ secrets.GITHUB_TOKEN }}
-            github_actor=${{ github.actor }}
+            github_token=${{ steps.package-token.outputs.token || secrets.GITHUB_TOKEN }}
+            github_actor=${{ steps.package-token.outputs.app-slug && format('{0}[bot]', steps.package-token.outputs.app-slug) || github.actor }}
           build-args: |
             GIT_SHA=${{ github.sha }}
             AGENT_KIT_RUNTIME_REF=ghcr.io/jorisjonkers-dev/agent-kit/runtime-home:v1.1.0
