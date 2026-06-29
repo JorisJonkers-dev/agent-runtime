@@ -1,0 +1,160 @@
+apiVersion: deployment.jorisjonkers.dev/v2
+kind: Deployment
+metadata:
+  name: agent-runtime
+  labels:
+    app.kubernetes.io/part-of: agent-runtime
+spec:
+  services:
+    agent-gateway:
+      image: ghcr.io/jorisjonkers-dev/agent-runtime/agent-gateway:${BUNDLE_VERSION}
+      namespace: agents-system
+      account: agent-runner
+      ports:
+        - name: http
+          containerPort: 8090
+      placement:
+        site: enschede
+        requiredCapabilities:
+          - agent-runner
+      observability:
+        metrics:
+          - port: http
+            path: /actuator/prometheus
+      safety:
+        gateOn:
+          - routeOrAuthChange
+          - dynamicCredentialRoleChange
+
+    agent-runner-template:
+      image: ghcr.io/jorisjonkers-dev/agent-runtime/agent-runner:${BUNDLE_VERSION}
+      namespace: agents-system
+      account: agent-runner
+      ports:
+        - name: gateway
+          containerPort: 8090
+      placement:
+        site: enschede
+        nodeSelector:
+          personal-stack/node: enschede-gtx-960m-1
+        requiredCapabilities:
+          - agent-runner
+      credentials:
+        - name: claude-credentials
+          claim: agents.claude-credentials
+          destinationSecret: claude-credentials
+        - name: codex-credentials
+          claim: agents.codex-credentials
+          destinationSecret: codex-credentials
+        - name: github-app
+          claim: agents.github-app
+          destinationSecret: github-app
+      safety:
+        gateOn:
+          - dynamicCredentialRoleChange
+          - nodePinChangeWithData
+
+    auth-bootstrap:
+      image: ghcr.io/jorisjonkers-dev/agent-runtime/agent-runner:${BUNDLE_VERSION}
+      namespace: agents-system
+      account: agent-runner
+      command:
+        - /bin/sh
+        - -ec
+        - exec sleep infinity
+      placement:
+        site: enschede
+        nodeSelector:
+          personal-stack/node: enschede-gtx-960m-1
+      credentials:
+        - name: claude-credentials
+          claim: agents.claude-credentials
+          destinationSecret: claude-credentials
+        - name: codex-credentials
+          claim: agents.codex-credentials
+          destinationSecret: codex-credentials
+      safety:
+        gateOn:
+          - dynamicCredentialRoleChange
+
+    refresh-ping:
+      image: ghcr.io/jorisjonkers-dev/agent-runtime/agent-runner:${BUNDLE_VERSION}
+      namespace: agents-system
+      account: agent-runner
+      command:
+        - /bin/sh
+        - -ec
+        - claude --version && codex --version
+      placement:
+        site: enschede
+        nodeSelector:
+          personal-stack/node: enschede-gtx-960m-1
+      credentials:
+        - name: claude-credentials
+          claim: agents.claude-credentials
+          destinationSecret: claude-credentials
+        - name: codex-credentials
+          claim: agents.codex-credentials
+          destinationSecret: codex-credentials
+
+    kb-install:
+      image: ghcr.io/jorisjonkers-dev/agent-runtime/agent-runner:${BUNDLE_VERSION}
+      namespace: agents-system
+      account: agent-runner
+      command:
+        - /bin/bash
+        - -ec
+        - curl -fsSL http://knowledge-api.knowledge-system.svc.cluster.local:8080/install.sh | bash -s -- --agent all
+      placement:
+        site: enschede
+        nodeSelector:
+          personal-stack/node: enschede-gtx-960m-1
+      credentials:
+        - name: kb-bearer
+          claim: agents.kb-bearer
+          destinationSecret: agents-kb-bearer
+        - name: claude-credentials
+          claim: agents.claude-credentials
+          destinationSecret: claude-credentials
+        - name: codex-credentials
+          claim: agents.codex-credentials
+          destinationSecret: codex-credentials
+
+    kb-curator:
+      image: ghcr.io/jorisjonkers-dev/agent-runtime/agent-runner:${BUNDLE_VERSION}
+      namespace: agents-system
+      account: agent-runner
+      command:
+        - /bin/bash
+        - -ec
+        - claude --version
+      placement:
+        site: enschede
+        nodeSelector:
+          personal-stack/node: enschede-gtx-960m-1
+      credentials:
+        - name: kb-bearer
+          claim: agents.kb-bearer
+          destinationSecret: agents-kb-bearer
+        - name: claude-credentials
+          claim: agents.claude-credentials
+          destinationSecret: claude-credentials
+
+    agents-login:
+      image: ghcr.io/jorisjonkers-dev/agent-runtime/agents-login:${BUNDLE_VERSION}
+      namespace: agents-system
+      account: agents-login-worker
+      args:
+        - worker
+      ports:
+        - name: http
+          containerPort: 8081
+      placement:
+        site: enschede
+      credentials:
+        - name: internal-token
+          claim: agents.agents-login-internal
+          destinationSecret: agents-login-internal
+      safety:
+        gateOn:
+          - dynamicCredentialRoleChange

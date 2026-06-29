@@ -1,0 +1,7 @@
+{
+  "images": [
+    "ghcr.io/jorisjonkers-dev/agent-runtime/agent-gateway:${BUNDLE_VERSION}",
+    "ghcr.io/jorisjonkers-dev/agent-runtime/agent-runner:${BUNDLE_VERSION}",
+    "ghcr.io/jorisjonkers-dev/agent-runtime/agents-login:${BUNDLE_VERSION}"
+  ]
+}
