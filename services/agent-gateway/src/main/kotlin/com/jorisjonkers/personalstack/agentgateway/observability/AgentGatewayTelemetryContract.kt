@@ -173,5 +173,6 @@ object AgentGatewayTelemetryContract {
     val byMicrometerId = meters.associateBy { it.micrometerId }
 
     private fun <T> Array<T>.labels(): Set<String>
-        where T : Enum<T>, T : GatewayTelemetryLabel = map { it.label }.toSet()
+        where T : Enum<T>, T : GatewayTelemetryLabel =
+        map { it.label }.toSet()
 }
