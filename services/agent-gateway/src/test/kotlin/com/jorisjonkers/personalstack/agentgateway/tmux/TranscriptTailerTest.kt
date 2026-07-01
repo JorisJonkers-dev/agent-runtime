@@ -1,5 +1,3 @@
-@file:Suppress("UnusedParameter")
-
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
@@ -41,9 +39,7 @@ class TranscriptTailerTest {
     }
 
     @Test
-    fun `replayAvailable reports bounded failure reason`(
-        @TempDir tmp: Path,
-    ) {
+    fun `replayAvailable reports bounded failure reason`() {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = mockk<TranscriptStore>()
         every { store.readRaw(stable, any(), any()) } throws IllegalStateException("x".repeat(400))

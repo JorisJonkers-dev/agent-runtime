@@ -43,7 +43,7 @@ import java.util.concurrent.ConcurrentHashMap
  * Code doesn't ripple into the runner image.
  */
 @Component
-@Suppress("LargeClass", "TooManyFunctions")
+@Suppress("TooManyFunctions")
 class AgentAttachHandler(
     private val sessions: AgentSessionManager,
     private val mapper: ObjectMapper,
@@ -110,7 +110,17 @@ class AgentAttachHandler(
 
         val stableSessionId = agent.stableSessionId
         if (stableSessionId != null) {
-            attachDurable(session, stableSessionId, agent.epoch, kind, requestedMode, query.values, startedAt)
+            attachDurable(
+                DurableAttachContext(
+                    session = session,
+                    stableSessionId = stableSessionId,
+                    epoch = agent.epoch,
+                    kind = kind,
+                    requestedMode = requestedMode,
+                    query = query.values,
+                    startedAt = startedAt,
+                ),
+            )
             return
         }
 
@@ -171,16 +181,15 @@ class AgentAttachHandler(
     }
 
     // Durable attach sends control frames before starting the transcript tailer.
-    @Suppress("LongMethod", "LongParameterList", "ReturnCount", "CyclomaticComplexMethod")
-    private fun attachDurable(
-        session: WebSocketSession,
-        stableSessionId: String,
-        epoch: Long,
-        kind: GatewayAgentKindLabel,
-        requestedMode: GatewayModeLabel,
-        query: Map<String, String>,
-        startedAt: Instant,
-    ) {
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "ReturnCount")
+    private fun attachDurable(context: DurableAttachContext) {
+        val session = context.session
+        val stableSessionId = context.stableSessionId
+        val epoch = context.epoch
+        val kind = context.kind
+        val requestedMode = context.requestedMode
+        val query = context.query
+        val startedAt = context.startedAt
         val metadata =
             runCatching { transcriptStore.recoverMetadata(stableSessionId) }
                 .getOrElse {
@@ -535,27 +544,29 @@ class AgentAttachHandler(
         return GatewayFailureReasonLabel.fromRaw(rawReason)
     }
 
-    @Suppress("ReturnCount")
     override fun handleTextMessage(
         session: WebSocketSession,
         message: TextMessage,
     ) {
         val agentId = agentIdOf(session) ?: return
-        val payload =
-            runCatching { mapper.readValue(message.payload, Map::class.java) }
-                .getOrElse {
-                    log.warn("bad ws payload: {}", message.payload.take(120))
-                    return
-                }
+        val payload = payloadOf(message) ?: return
         val resize = payload["resize"] as? Map<*, *>
         if (resize != null) {
             handleResize(agentId, resize)
         } else {
-            val input = payload["input"] as? String ?: return
-            val enter = payload["enter"] as? Boolean ?: true
-            sessions.send(agentId, input, enter)
+            (payload["input"] as? String)?.let { input ->
+                val enter = payload["enter"] as? Boolean ?: true
+                sessions.send(agentId, input, enter)
+            }
         }
     }
+
+    private fun payloadOf(message: TextMessage): Map<*, *>? =
+        runCatching { mapper.readValue(message.payload, Map::class.java) }
+            .getOrElse {
+                log.warn("bad ws payload: {}", message.payload.take(PAYLOAD_PREVIEW_CHARS))
+                null
+            }
 
     private fun handleResize(
         agentId: String,
@@ -577,11 +588,12 @@ class AgentAttachHandler(
         }
     }
 
-    @Suppress("ReturnCount")
     private fun agentIdOf(session: WebSocketSession): String? {
-        val path = session.uri?.path ?: return null
-        val match = Regex("/ws/agents/([^/]+)/attach").find(path) ?: return null
-        return match.groupValues[1]
+        val path = session.uri?.path
+        return path
+            ?.let { Regex("/ws/agents/([^/]+)/attach").find(it) }
+            ?.groupValues
+            ?.get(1)
     }
 
     private data class QueryParseResult(
@@ -592,6 +604,16 @@ class AgentAttachHandler(
     private data class ParsedLong(
         val value: Long? = null,
         val malformed: Boolean = false,
+    )
+
+    private data class DurableAttachContext(
+        val session: WebSocketSession,
+        val stableSessionId: String,
+        val epoch: Long,
+        val kind: GatewayAgentKindLabel,
+        val requestedMode: GatewayModeLabel,
+        val query: Map<String, String>,
+        val startedAt: Instant,
     )
 
     companion object {
@@ -606,5 +628,6 @@ class AgentAttachHandler(
         // it as cold and send the bounded snapshot instead of replaying the
         // whole gap.
         internal const val MAX_RESUME_REPLAY_BYTES = 512L * 1024L
+        private const val PAYLOAD_PREVIEW_CHARS = 120
     }
 }

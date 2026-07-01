@@ -1,5 +1,3 @@
-@file:Suppress("CyclomaticComplexMethod")
-
 package com.jorisjonkers.personalstack.agentgateway.observability
 
 interface GatewayTelemetryLabel {
@@ -178,20 +176,40 @@ enum class GatewayFailureReasonLabel(
         fun fromRaw(reason: String?): GatewayFailureReasonLabel {
             val normalized = normalize(reason) ?: return UNKNOWN
             return when {
-                normalized in setOf("none", "success", "ok") -> NONE
-                normalized in setOf("not_found", "missing", "gone") -> NOT_FOUND
-                normalized in setOf("invalid", "invalid_request", "bad_request") -> INVALID_REQUEST
-                normalized in setOf("process_exited", "exit", "exited") -> PROCESS_EXITED
-                normalized in setOf("tmux", "tmux_unavailable") -> TMUX_UNAVAILABLE
                 "timeout" in normalized || "timed_out" in normalized -> TIMEOUT
-                normalized in setOf("io", "io_error", "filesystem") -> IO_ERROR
-                normalized in setOf("permission", "permission_denied", "forbidden") -> PERMISSION_DENIED
-                normalized in setOf("capacity", "quota", "storage_full") -> CAPACITY
-                normalized in setOf("cancelled", "canceled") -> CANCELLED
-                normalized == "unknown" -> UNKNOWN
-                else -> OTHER
+                else -> FAILURE_REASON_ALIASES[normalized] ?: OTHER
             }
         }
+
+        private val FAILURE_REASON_ALIASES =
+            mapOf(
+                "none" to NONE,
+                "success" to NONE,
+                "ok" to NONE,
+                "not_found" to NOT_FOUND,
+                "missing" to NOT_FOUND,
+                "gone" to NOT_FOUND,
+                "invalid" to INVALID_REQUEST,
+                "invalid_request" to INVALID_REQUEST,
+                "bad_request" to INVALID_REQUEST,
+                "process_exited" to PROCESS_EXITED,
+                "exit" to PROCESS_EXITED,
+                "exited" to PROCESS_EXITED,
+                "tmux" to TMUX_UNAVAILABLE,
+                "tmux_unavailable" to TMUX_UNAVAILABLE,
+                "io" to IO_ERROR,
+                "io_error" to IO_ERROR,
+                "filesystem" to IO_ERROR,
+                "permission" to PERMISSION_DENIED,
+                "permission_denied" to PERMISSION_DENIED,
+                "forbidden" to PERMISSION_DENIED,
+                "capacity" to CAPACITY,
+                "quota" to CAPACITY,
+                "storage_full" to CAPACITY,
+                "cancelled" to CANCELLED,
+                "canceled" to CANCELLED,
+                "unknown" to UNKNOWN,
+            )
     }
 }
 

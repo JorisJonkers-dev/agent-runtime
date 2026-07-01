@@ -191,32 +191,72 @@ class AgentControllerTest {
     }
 
     @Test
-    @Suppress("LongMethod")
     fun `records REST terminal outcomes with bounded labels`() {
+        val fixture = restOutcomeFixture()
+        exerciseTerminalOutcomes(fixture.localMvc)
+
+        assertThat(fixture.telemetry.operations.map { Triple(it.operation, it.outcome, it.reason) })
+            .contains(
+                Triple(GatewayOperationLabel.SPAWN, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.INPUT, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.REPLAY, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+                Triple(GatewayOperationLabel.STOP, GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.NOT_FOUND),
+                Triple(
+                    GatewayOperationLabel.INPUT,
+                    GatewayOutcomeLabel.FAILURE,
+                    GatewayFailureReasonLabel.INVALID_REQUEST,
+                ),
+                Triple(GatewayOperationLabel.REPLAY, GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.UNKNOWN),
+            )
+        assertThat(fixture.observations.map { it["outcome"] })
+            .contains("success", "accepted", "no_content", "not_found", "malformed_input", "failure")
+        assertThat(fixture.telemetry.operations.flatMap { it.labels() })
+            .doesNotContain(
+                "abc12345",
+                "11111111-1111-1111-1111-111111111111",
+                "/workspace/repo",
+                "source.txt",
+            )
+        assertThat(fixture.observations.flatMap { it.values })
+            .doesNotContain(
+                "abc12345",
+                "11111111-1111-1111-1111-111111111111",
+                "/workspace/repo",
+                "source.txt",
+            )
+    }
+
+    private fun restOutcomeFixture(): RestOutcomeFixture {
         val localSessions = mockk<AgentSessionManager>()
         val telemetry = RecordingTelemetry()
         val observations = CopyOnWriteArrayList<Map<String, String>>()
-        val observationRegistry =
-            ObservationRegistry.create().apply {
-                observationConfig().observationHandler(
-                    object : ObservationHandler<Observation.Context> {
-                        override fun supportsContext(context: Observation.Context): Boolean = true
-
-                        override fun onStop(context: Observation.Context) {
-                            observations +=
-                                context.lowCardinalityKeyValues.associate { keyValue ->
-                                    keyValue.key to keyValue.value
-                                }
-                        }
-                    },
-                )
-            }
+        val observationRegistry = observationRegistry(observations)
         val localMvc =
             MockMvcBuilders
                 .standaloneSetup(AgentController(localSessions, telemetry, observationRegistry))
                 .setControllerAdvice(ErrorAdvice())
                 .build()
+        stubTerminalOutcomeSessions(localSessions)
+        return RestOutcomeFixture(localMvc, telemetry, observations)
+    }
 
+    private fun observationRegistry(observations: CopyOnWriteArrayList<Map<String, String>>): ObservationRegistry =
+        ObservationRegistry.create().apply {
+            observationConfig().observationHandler(
+                object : ObservationHandler<Observation.Context> {
+                    override fun supportsContext(context: Observation.Context): Boolean = true
+
+                    override fun onStop(context: Observation.Context) {
+                        observations +=
+                            context.lowCardinalityKeyValues.associate { keyValue ->
+                                keyValue.key to keyValue.value
+                            }
+                    }
+                },
+            )
+        }
+
+    private fun stubTerminalOutcomeSessions(localSessions: AgentSessionManager) {
         every { localSessions.spawn(AgentSpawnRequest(kind = AgentKind.SHELL)) } returns
             sample.copy(kind = AgentKind.SHELL)
         every { localSessions.send("abc12345", "hi", true) } returns Unit
@@ -228,7 +268,9 @@ class AgentControllerTest {
         every {
             localSessions.capture("boom")
         } throws ProcessFailedException(listOf("tmux"), ProcessRunner.Result(exitCode = 1, stdout = "", stderr = "bad"))
+    }
 
+    private fun exerciseTerminalOutcomes(localMvc: MockMvc) {
         localMvc
             .perform(post("/agents").contentType(MediaType.APPLICATION_JSON).content("""{"kind":"SHELL"}"""))
             .andExpect(status().isCreated)
@@ -249,40 +291,16 @@ class AgentControllerTest {
                     .content("""{"content":"","name":"source.txt"}"""),
             ).andExpect(status().isBadRequest)
         localMvc.perform(get("/agents/boom/capture")).andExpect(status().isInternalServerError)
-
-        assertThat(telemetry.operations.map { Triple(it.operation, it.outcome, it.reason) })
-            .contains(
-                Triple(GatewayOperationLabel.SPAWN, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
-                Triple(GatewayOperationLabel.INPUT, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
-                Triple(GatewayOperationLabel.REPLAY, GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
-                Triple(GatewayOperationLabel.STOP, GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.NOT_FOUND),
-                Triple(
-                    GatewayOperationLabel.INPUT,
-                    GatewayOutcomeLabel.FAILURE,
-                    GatewayFailureReasonLabel.INVALID_REQUEST,
-                ),
-                Triple(GatewayOperationLabel.REPLAY, GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.UNKNOWN),
-            )
-        assertThat(observations.map { it["outcome"] })
-            .contains("success", "accepted", "no_content", "not_found", "malformed_input", "failure")
-        assertThat(telemetry.operations.flatMap { it.labels() })
-            .doesNotContain(
-                "abc12345",
-                "11111111-1111-1111-1111-111111111111",
-                "/workspace/repo",
-                "source.txt",
-            )
-        assertThat(observations.flatMap { it.values })
-            .doesNotContain(
-                "abc12345",
-                "11111111-1111-1111-1111-111111111111",
-                "/workspace/repo",
-                "source.txt",
-            )
     }
 
     private fun GatewayOperationTelemetry.labels(): List<String> =
         listOf(operation.label, kind.label, mode.label, outcome.label, reason.label)
+
+    private data class RestOutcomeFixture(
+        val localMvc: MockMvc,
+        val telemetry: RecordingTelemetry,
+        val observations: CopyOnWriteArrayList<Map<String, String>>,
+    )
 
     private class RecordingTelemetry : AgentGatewayTelemetry {
         val operations = CopyOnWriteArrayList<GatewayOperationTelemetry>()

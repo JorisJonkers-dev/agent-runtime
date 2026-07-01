@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit
  * caller (agents-api) should detect a missing job id and surface it
  * as a FAILED status.
  */
-@Suppress("LargeClass", "TooManyFunctions")
+@Suppress("TooManyFunctions")
 @Component
 class HeadlessJobManager(
     private val props: GatewayProperties,
@@ -69,7 +69,6 @@ class HeadlessJobManager(
             ),
         )
 
-    @Suppress("LongMethod")
     fun launch(request: HeadlessLaunchRequest): HeadlessJob {
         val id = UUID.randomUUID().toString().substring(0, 8)
         val cwd = File(request.workspacePath ?: props.workspaceRoot)
@@ -156,7 +155,6 @@ class HeadlessJobManager(
         executor.shutdownNow()
     }
 
-    @Suppress("LongMethod")
     private fun runJob(context: HeadlessRunContext) {
         val process =
             startProcess(context.id, context.kind, context.command, context.cwd)
@@ -218,7 +216,6 @@ class HeadlessJobManager(
             null
         }
 
-    @Suppress("LongMethod")
     private fun awaitAndCapture(
         id: String,
         process: Process,

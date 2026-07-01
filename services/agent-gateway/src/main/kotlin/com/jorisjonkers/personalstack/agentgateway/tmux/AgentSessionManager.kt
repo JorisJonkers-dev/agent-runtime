@@ -1,5 +1,3 @@
-@file:Suppress("TooManyFunctions", "LargeClass", "TooGenericExceptionCaught", "LongMethod", "CyclomaticComplexMethod")
-
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
@@ -45,6 +43,7 @@ import kotlin.io.path.Path
  * surfacing as a 409.
  */
 @Component
+@Suppress("TooManyFunctions")
 class AgentSessionManager(
     private val tmux: TmuxClient,
     private val props: GatewayProperties,
@@ -84,6 +83,7 @@ class AgentSessionManager(
         recordActiveSessionCounts()
     }
 
+    @Suppress("LongMethod")
     private fun maintainTranscripts() {
         val cap = props.tmux.logCapBytes
         sessions.values.forEach { session ->
@@ -192,103 +192,105 @@ class AgentSessionManager(
         var failure: Throwable? = null
         val observation = startSessionObservation(GatewayOperationLabel.SPAWN, telemetryKind)
         try {
-            val id = UUID.randomUUID().toString().substring(0, 8)
-            val tmuxSession = "agent-$id"
-            val requestedCwd = request.workspacePath ?: props.workspaceRoot
-            val durableStableSessionId =
-                request.stableSessionId?.let(transcriptStore::validateStableSessionId)
-                    ?: UUID.randomUUID().toString()
-            val durableEpoch = request.epoch ?: 1
-            require(durableEpoch > 0) { "epoch must be positive" }
-            val lease = transcriptStore.acquireLease(durableStableSessionId, tmuxSession, durableEpoch)
-            val logFile: Path =
-                try {
-                    transcriptStore.open(durableStableSessionId, durableEpoch)
-                    if (durableEpoch > 1 || request.continuation != null) {
-                        transcriptStore.appendContinuationDelimiter(
-                            durableStableSessionId,
-                            durableEpoch,
-                            request.continuation,
-                        )
+            return runCatching {
+                val id = UUID.randomUUID().toString().substring(0, 8)
+                val tmuxSession = "agent-$id"
+                val requestedCwd = request.workspacePath ?: props.workspaceRoot
+                val durableStableSessionId =
+                    request.stableSessionId?.let(transcriptStore::validateStableSessionId)
+                        ?: UUID.randomUUID().toString()
+                val durableEpoch = request.epoch ?: 1
+                require(durableEpoch > 0) { "epoch must be positive" }
+                val lease = transcriptStore.acquireLease(durableStableSessionId, tmuxSession, durableEpoch)
+                val logFile: Path =
+                    try {
+                        transcriptStore.open(durableStableSessionId, durableEpoch)
+                        if (durableEpoch > 1 || request.continuation != null) {
+                            transcriptStore.appendContinuationDelimiter(
+                                durableStableSessionId,
+                                durableEpoch,
+                                request.continuation,
+                            )
+                        }
+                        transcriptStore.activeSegmentPath(durableStableSessionId)
+                    } catch (e: IOException) {
+                        transcriptStore.releaseLease(lease)
+                        throw e
+                    } catch (e: NumberFormatException) {
+                        transcriptStore.releaseLease(lease)
+                        throw e
+                    } catch (e: IllegalArgumentException) {
+                        transcriptStore.releaseLease(lease)
+                        throw e
+                    } catch (e: IllegalStateException) {
+                        transcriptStore.releaseLease(lease)
+                        throw e
                     }
-                    transcriptStore.activeSegmentPath(durableStableSessionId)
+
+                val codexHome = if (request.kind == AgentKind.CODEX) codexSessionHome(durableStableSessionId) else null
+                codexHome?.let(::prepareCodexHome)
+                val launch = commandAndSessionIdFor(request.kind, requestedCwd, request.resumeCliSessionId, codexHome)
+                try {
+                    tmux.newSession(tmuxSession, launch.command, launch.cwd)
+                    tmux.startPipeToFile(tmuxSession, logFile)
                 } catch (e: IOException) {
                     transcriptStore.releaseLease(lease)
                     throw e
-                } catch (e: NumberFormatException) {
+                } catch (e: InterruptedException) {
                     transcriptStore.releaseLease(lease)
                     throw e
-                } catch (e: IllegalArgumentException) {
+                } catch (e: ProcessFailedException) {
                     transcriptStore.releaseLease(lease)
                     throw e
-                } catch (e: IllegalStateException) {
+                } catch (e: ProcessTimeoutException) {
+                    transcriptStore.releaseLease(lease)
+                    throw e
+                } catch (e: SecurityException) {
                     transcriptStore.releaseLease(lease)
                     throw e
                 }
 
-            val codexHome = if (request.kind == AgentKind.CODEX) codexSessionHome(durableStableSessionId) else null
-            codexHome?.let(::prepareCodexHome)
-            val launch = commandAndSessionIdFor(request.kind, requestedCwd, request.resumeCliSessionId, codexHome)
-            try {
-                tmux.newSession(tmuxSession, launch.command, launch.cwd)
-                tmux.startPipeToFile(tmuxSession, logFile)
-            } catch (e: IOException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            } catch (e: InterruptedException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            } catch (e: ProcessFailedException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            } catch (e: ProcessTimeoutException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            } catch (e: SecurityException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            }
+                // Codex's native id only exists once it writes the rollout at
+                // session start; capture it from the isolated home (fresh case).
+                // Claude and Codex-resume already know their id at build time.
+                val cliSessionId =
+                    launch.cliSessionId
+                        ?: codexHome?.takeIf { request.kind == AgentKind.CODEX }?.let(::captureCodexSessionId)
 
-            // Codex's native id only exists once it writes the rollout at
-            // session start; capture it from the isolated home (fresh case).
-            // Claude and Codex-resume already know their id at build time.
-            val cliSessionId =
-                launch.cliSessionId
-                    ?: codexHome?.takeIf { request.kind == AgentKind.CODEX }?.let(::captureCodexSessionId)
-
-            val session =
-                AgentSession(
-                    id = id,
-                    kind = request.kind,
-                    tmuxSession = tmuxSession,
-                    logFile = logFile,
-                    cwd = launch.cwd,
-                    createdAt = Instant.now(),
-                    cliSessionId = cliSessionId,
-                    stableSessionId = durableStableSessionId,
-                    epoch = durableEpoch,
-                    continuation = request.continuation,
-                    transcriptFile = logFile,
-                    transcriptLease = lease,
+                val session =
+                    AgentSession(
+                        id = id,
+                        kind = request.kind,
+                        tmuxSession = tmuxSession,
+                        logFile = logFile,
+                        cwd = launch.cwd,
+                        createdAt = Instant.now(),
+                        cliSessionId = cliSessionId,
+                        stableSessionId = durableStableSessionId,
+                        epoch = durableEpoch,
+                        continuation = request.continuation,
+                        transcriptFile = logFile,
+                        transcriptLease = lease,
+                    )
+                sessions[id] = session
+                recordActiveSessionCounts()
+                log.info(
+                    "spawned {} agent {} ({}) in {} cliSessionId={} stableSessionId={} epoch={}",
+                    request.kind,
+                    id,
+                    tmuxSession,
+                    launch.cwd,
+                    cliSessionId,
+                    durableStableSessionId,
+                    durableEpoch,
                 )
-            sessions[id] = session
-            recordActiveSessionCounts()
-            log.info(
-                "spawned {} agent {} ({}) in {} cliSessionId={} stableSessionId={} epoch={}",
-                request.kind,
-                id,
-                tmuxSession,
-                launch.cwd,
-                cliSessionId,
-                durableStableSessionId,
-                durableEpoch,
-            )
-            return session
-        } catch (e: Exception) {
-            outcome = GatewayOutcomeLabel.FAILURE
-            reason = failureReasonLabel(e)
-            failure = e
-            throw e
+                session
+            }.getOrElse { error ->
+                outcome = GatewayOutcomeLabel.FAILURE
+                reason = failureReasonLabel(error)
+                failure = error
+                throw error
+            }
         } finally {
             recordSessionOperation(
                 SessionOperationRecord(
@@ -312,23 +314,25 @@ class AgentSessionManager(
         var failure: Throwable? = null
         var observation: Observation? = null
         try {
-            val session = sessions.remove(id) ?: return false
-            kind = session.kind.toTelemetryKind()
-            observation = startSessionObservation(GatewayOperationLabel.STOP, kind)
-            tmux.killSession(session.tmuxSession)
-            session.stableSessionId?.let {
-                transcriptStore.seal(it)
-                session.transcriptLease?.let(transcriptStore::releaseLease)
+            return runCatching {
+                val session = sessions.remove(id) ?: return@runCatching false
+                kind = session.kind.toTelemetryKind()
+                observation = startSessionObservation(GatewayOperationLabel.STOP, kind)
+                tmux.killSession(session.tmuxSession)
+                session.stableSessionId?.let {
+                    transcriptStore.seal(it)
+                    session.transcriptLease?.let(transcriptStore::releaseLease)
+                }
+                outcome = GatewayOutcomeLabel.SUCCESS
+                reason = GatewayFailureReasonLabel.NONE
+                log.info("stopped agent {}", id)
+                true
+            }.getOrElse { error ->
+                outcome = GatewayOutcomeLabel.FAILURE
+                reason = failureReasonLabel(error)
+                failure = error
+                throw error
             }
-            outcome = GatewayOutcomeLabel.SUCCESS
-            reason = GatewayFailureReasonLabel.NONE
-            log.info("stopped agent {}", id)
-            return true
-        } catch (e: Exception) {
-            outcome = GatewayOutcomeLabel.FAILURE
-            reason = failureReasonLabel(e)
-            failure = e
-            throw e
         } finally {
             recordActiveSessionCounts()
             recordSessionOperation(
@@ -372,17 +376,19 @@ class AgentSessionManager(
         var reason = GatewayFailureReasonLabel.NONE
         var failure: Throwable? = null
         try {
-            val ok = transcriptStore.cleanup(transcriptStore.validateStableSessionId(stableSessionId))
-            if (!ok) {
+            return runCatching {
+                val ok = transcriptStore.cleanup(transcriptStore.validateStableSessionId(stableSessionId))
+                if (!ok) {
+                    outcome = GatewayOutcomeLabel.FAILURE
+                    reason = GatewayFailureReasonLabel.NOT_FOUND
+                }
+                ok
+            }.getOrElse { error ->
                 outcome = GatewayOutcomeLabel.FAILURE
-                reason = GatewayFailureReasonLabel.NOT_FOUND
+                reason = failureReasonLabel(error)
+                failure = error
+                throw error
             }
-            return ok
-        } catch (e: Exception) {
-            outcome = GatewayOutcomeLabel.FAILURE
-            reason = failureReasonLabel(e)
-            failure = e
-            throw e
         } finally {
             recordSessionOperation(
                 SessionOperationRecord(
@@ -467,15 +473,17 @@ class AgentSessionManager(
         var failure: Throwable? = null
         var observation: Observation? = null
         try {
-            val session = sessions[id] ?: error("unknown agent: $id")
-            kind = session.kind.toTelemetryKind()
-            if (observed) observation = startSessionObservation(operation, kind)
-            return block(session)
-        } catch (e: Exception) {
-            outcome = GatewayOutcomeLabel.FAILURE
-            reason = failureReasonLabel(e)
-            failure = e
-            throw e
+            return runCatching {
+                val session = sessions[id] ?: error("unknown agent: $id")
+                kind = session.kind.toTelemetryKind()
+                if (observed) observation = startSessionObservation(operation, kind)
+                block(session)
+            }.getOrElse { error ->
+                outcome = GatewayOutcomeLabel.FAILURE
+                reason = failureReasonLabel(error)
+                failure = error
+                throw error
+            }
         } finally {
             recordSessionOperation(
                 SessionOperationRecord(
@@ -671,18 +679,23 @@ class AgentSessionManager(
         return null
     }
 
-    @Suppress("ReturnCount")
     private fun newestRolloutId(sessionsDir: Path): String? {
-        if (!Files.isDirectory(sessionsDir)) return null
         val newest =
-            Files.walk(sessionsDir).use { stream ->
-                stream
-                    .filter { Files.isRegularFile(it) && ROLLOUT_FILE.matches(it.fileName.toString()) }
-                    .max(compareBy { runCatching { Files.getLastModifiedTime(it).toMillis() }.getOrDefault(0L) })
-                    .orElse(null)
-            } ?: return null
-        return ROLLOUT_ID.find(newest.fileName.toString())?.groupValues?.get(1)
+            if (Files.isDirectory(sessionsDir)) {
+                newestRolloutFile(sessionsDir)
+            } else {
+                null
+            }
+        return newest?.let { ROLLOUT_ID.find(it.fileName.toString())?.groupValues?.get(1) }
     }
+
+    private fun newestRolloutFile(sessionsDir: Path): Path? =
+        Files.walk(sessionsDir).use { stream ->
+            stream
+                .filter { Files.isRegularFile(it) && ROLLOUT_FILE.matches(it.fileName.toString()) }
+                .max(compareBy { runCatching { Files.getLastModifiedTime(it).toMillis() }.getOrDefault(0L) })
+                .orElse(null)
+        }
 
     private fun safeFileName(requestedName: String?): String {
         val raw = requestedName?.trim()?.takeIf { it.isNotBlank() } ?: DEFAULT_STAGED_INPUT_NAME

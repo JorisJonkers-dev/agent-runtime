@@ -27,18 +27,17 @@ class ClaudeTranscriptLocator(
         sessionId: String,
     ): Boolean = findTranscript(cwd, sessionId) != null
 
-    @Suppress("ReturnCount")
     fun findTranscript(
         cwd: String,
         sessionId: String,
     ): Transcript? {
         val normalizedCwd = normalizeCwd(cwd)
         val exact = transcriptPath(normalizedCwd, sessionId)
-        if (Files.isRegularFile(exact)) {
-            return Transcript(exact, transcriptCwd(exact) ?: normalizedCwd)
+        return when {
+            Files.isRegularFile(exact) -> Transcript(exact, transcriptCwd(exact) ?: normalizedCwd)
+            Files.isDirectory(projectsDir) -> scanForTranscript(sessionId)
+            else -> null
         }
-        if (!Files.isDirectory(projectsDir)) return null
-        return scanForTranscript(sessionId)
     }
 
     // The original launch cwd is not always replayed on revival, so when the

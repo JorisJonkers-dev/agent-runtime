@@ -137,14 +137,18 @@ class LogTailer(
          * codepoint. Malformed lead bytes are treated as complete so the
          * decoder substitutes them rather than the carry growing forever.
          */
-        @Suppress("ReturnCount")
         internal fun completeUtf8Length(buf: ByteArray): Int {
-            if (buf.isEmpty()) return 0
+            if (buf.isEmpty()) {
+                return 0
+            }
             val leadIndex = trailingLeadByteIndex(buf)
-            if (leadIndex == NO_UTF8_LEAD_BYTE) return buf.size
-            val availableSequenceBytes = buf.size - leadIndex
-            val expectedSequenceBytes = utf8SequenceLength(buf[leadIndex].toUnsignedInt())
-            return if (availableSequenceBytes >= expectedSequenceBytes) buf.size else leadIndex
+            return if (leadIndex == NO_UTF8_LEAD_BYTE) {
+                buf.size
+            } else {
+                val availableSequenceBytes = buf.size - leadIndex
+                val expectedSequenceBytes = utf8SequenceLength(buf[leadIndex].toUnsignedInt())
+                if (availableSequenceBytes >= expectedSequenceBytes) buf.size else leadIndex
+            }
         }
 
         private fun trailingLeadByteIndex(buf: ByteArray): Int {

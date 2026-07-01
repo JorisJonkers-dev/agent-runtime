@@ -1,5 +1,3 @@
-@file:Suppress("LongMethod")
-
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import io.micrometer.observation.Observation
@@ -79,7 +77,6 @@ class TranscriptTailer(
             TranscriptPollResult(failureReason = failureReason(it))
         }
 
-    @Suppress("ReturnCount")
     private fun pollOnceUnchecked(): TranscriptPollResult {
         val read = store.readRaw(stableSessionId, offset)
         if (read.startOffset > offset) {
@@ -87,22 +84,36 @@ class TranscriptTailer(
             offset = read.startOffset
             options.onTrim(offset)
         }
-        if (read.bytes.isEmpty()) return TranscriptPollResult()
+        return if (read.bytes.isEmpty()) {
+            TranscriptPollResult()
+        } else {
+            emitCompleteFrames(read)
+        }
+    }
 
+    private fun emitCompleteFrames(read: TranscriptRawRead): TranscriptPollResult {
         val readEnd = read.startOffset + read.bytes.size
-        val buf = if (carry.isEmpty()) read.bytes else carry + read.bytes
-        val complete = LogTailer.completeUtf8Length(buf)
-        carry = if (complete < buf.size) buf.copyOfRange(complete, buf.size) else EMPTY
+        val buffer = if (carry.isEmpty()) read.bytes else carry + read.bytes
+        val complete = LogTailer.completeUtf8Length(buffer)
+        carry = if (complete < buffer.size) buffer.copyOfRange(complete, buffer.size) else EMPTY
         offset = readEnd
-        if (complete == 0) return TranscriptPollResult()
+        return if (complete == 0) {
+            TranscriptPollResult()
+        } else {
+            emitFrames(buffer, complete, readEnd - carry.size - complete)
+        }
+    }
 
-        val completeEnd = readEnd - carry.size
-        val completeStart = completeEnd - complete
+    private fun emitFrames(
+        buffer: ByteArray,
+        complete: Int,
+        completeStart: Long,
+    ): TranscriptPollResult {
         var frameStart = completeStart
         var bytes = 0L
         var frames = 0L
         var failure: String? = null
-        LogTailer.chunked(String(buf, 0, complete, Charsets.UTF_8), options.maxChunkChars) { text ->
+        LogTailer.chunked(String(buffer, 0, complete, Charsets.UTF_8), options.maxChunkChars) { text ->
             if (failure != null) return@chunked
             val frameBytes = text.toByteArray(Charsets.UTF_8).size
             frameStart += frameBytes
