@@ -1,5 +1,3 @@
-@file:Suppress("LongMethod", "ThrowsCount", "TooGenericExceptionCaught", "TooManyFunctions")
-
 package com.jorisjonkers.personalstack.agentgateway.web
 
 import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
@@ -13,6 +11,7 @@ import com.jorisjonkers.personalstack.agentgateway.tmux.AgentContinuation
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSession
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
+import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSpawnRequest
 import com.jorisjonkers.personalstack.agentgateway.web.dto.AgentResponse
 import com.jorisjonkers.personalstack.agentgateway.web.dto.ContinuationMetadata
 import com.jorisjonkers.personalstack.agentgateway.web.dto.SendInputRequest
@@ -53,12 +52,14 @@ class AgentController(
         recordRestOperation(GatewayOperationLabel.SPAWN, req.kind.toTelemetryKind()) {
             val session =
                 sessions.spawn(
-                    req.kind,
-                    req.workspacePath,
-                    req.stableSessionId,
-                    req.epoch,
-                    req.continuation?.toDomain(),
-                    req.resumeCliSessionId,
+                    AgentSpawnRequest(
+                        kind = req.kind,
+                        workspacePath = req.workspacePath,
+                        stableSessionId = req.stableSessionId,
+                        epoch = req.epoch,
+                        continuation = req.continuation?.toDomain(),
+                        resumeCliSessionId = req.resumeCliSessionId,
+                    ),
                 )
             ResponseEntity.status(HttpStatus.CREATED).body(toResponse(session))
         }
@@ -66,7 +67,7 @@ class AgentController(
     @DeleteMapping("/transcripts/{stableSessionId}")
     fun cleanupTranscript(
         @PathVariable stableSessionId: String,
-    ): ResponseEntity<Void> =
+    ): ResponseEntity<Unit> =
         recordRestOperation(GatewayOperationLabel.REPLAY) {
             val ok = sessions.cleanupTranscript(stableSessionId)
             if (ok) ResponseEntity.noContent().build() else ResponseEntity.notFound().build()
@@ -90,7 +91,7 @@ class AgentController(
     fun send(
         @PathVariable id: String,
         @RequestBody req: SendInputRequest,
-    ): ResponseEntity<Void> =
+    ): ResponseEntity<Unit> =
         recordRestOperation(GatewayOperationLabel.INPUT) {
             sessions.send(id, req.input, req.enter)
             ResponseEntity.accepted().build()
@@ -120,7 +121,7 @@ class AgentController(
     @DeleteMapping("/{id}")
     fun stop(
         @PathVariable id: String,
-    ): ResponseEntity<Void> =
+    ): ResponseEntity<Unit> =
         recordRestOperation(GatewayOperationLabel.STOP) {
             val ok = sessions.stop(id)
             if (ok) ResponseEntity.noContent().build() else ResponseEntity.notFound().build()
@@ -141,21 +142,13 @@ class AgentController(
                 .lowCardinalityKeyValue("kind", kind.label)
                 .lowCardinalityKeyValue("mode", GatewayModeLabel.LIVE.label)
         try {
-            val result = block()
-            terminal = terminalOutcome(result)
-            return result
-        } catch (e: IllegalArgumentException) {
-            terminal = RestTerminalOutcome.MALFORMED_INPUT
-            failure = e
-            throw e
-        } catch (e: IllegalStateException) {
-            terminal = RestTerminalOutcome.NOT_FOUND
-            failure = e
-            throw e
-        } catch (e: Exception) {
-            terminal = RestTerminalOutcome.FAILURE
-            failure = e
-            throw e
+            return runCatching {
+                block().also { terminal = terminalOutcome(it) }
+            }.getOrElse { error ->
+                terminal = terminalOutcome(error)
+                failure = error
+                throw error
+            }
         } finally {
             observation
                 .lowCardinalityKeyValue("outcome", terminal.label)
@@ -175,62 +168,69 @@ class AgentController(
         }
     }
 
-    private fun terminalOutcome(result: Any?): RestTerminalOutcome {
-        val status = (result as? ResponseEntity<*>)?.statusCode ?: return RestTerminalOutcome.SUCCESS
-        return when {
-            status == HttpStatus.ACCEPTED -> RestTerminalOutcome.ACCEPTED
-            status == HttpStatus.NO_CONTENT -> RestTerminalOutcome.NO_CONTENT
-            status == HttpStatus.NOT_FOUND -> RestTerminalOutcome.NOT_FOUND
-            status.is4xxClientError -> RestTerminalOutcome.MALFORMED_INPUT
-            status.is5xxServerError -> RestTerminalOutcome.FAILURE
-            else -> RestTerminalOutcome.SUCCESS
-        }
-    }
-
-    private enum class RestTerminalOutcome(
-        val label: String,
-        val outcome: GatewayOutcomeLabel,
-        val reason: GatewayFailureReasonLabel,
-    ) {
-        SUCCESS("success", GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
-        ACCEPTED("accepted", GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
-        NO_CONTENT("no_content", GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
-        NOT_FOUND("not_found", GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.NOT_FOUND),
-        MALFORMED_INPUT("malformed_input", GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.INVALID_REQUEST),
-        FAILURE("failure", GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.UNKNOWN),
-    }
-
-    private fun AgentKind.toTelemetryKind(): GatewayAgentKindLabel = GatewayAgentKindLabel.fromRaw(name)
-
-    private fun toResponse(s: AgentSession) =
-        AgentResponse(
-            id = s.id,
-            kind = s.kind,
-            cwd = s.cwd,
-            createdAt = s.createdAt.toString(),
-            cliSessionId = s.cliSessionId,
-            stableSessionId = s.stableSessionId,
-            epoch = s.epoch,
-            continuation = s.continuation?.toDto(),
-        )
-
-    private fun ContinuationMetadata.toDomain() =
-        AgentContinuation(
-            reason = reason,
-            previousEpoch = previousEpoch,
-            fromSetupLabel = fromSetupLabel,
-            toSetupLabel = toSetupLabel,
-        )
-
-    private fun AgentContinuation.toDto() =
-        ContinuationMetadata(
-            reason = reason,
-            previousEpoch = previousEpoch,
-            fromSetupLabel = fromSetupLabel,
-            toSetupLabel = toSetupLabel,
-        )
-
     private companion object {
         private const val REST_OBSERVATION_NAME = "agent.gateway.rest.operation"
     }
 }
+
+private fun terminalOutcome(error: Throwable): RestTerminalOutcome =
+    when (error) {
+        is IllegalArgumentException -> RestTerminalOutcome.MALFORMED_INPUT
+        is IllegalStateException -> RestTerminalOutcome.NOT_FOUND
+        else -> RestTerminalOutcome.FAILURE
+    }
+
+private fun terminalOutcome(result: Any?): RestTerminalOutcome {
+    val status = (result as? ResponseEntity<*>)?.statusCode ?: return RestTerminalOutcome.SUCCESS
+    return when {
+        status == HttpStatus.ACCEPTED -> RestTerminalOutcome.ACCEPTED
+        status == HttpStatus.NO_CONTENT -> RestTerminalOutcome.NO_CONTENT
+        status == HttpStatus.NOT_FOUND -> RestTerminalOutcome.NOT_FOUND
+        status.is4xxClientError -> RestTerminalOutcome.MALFORMED_INPUT
+        status.is5xxServerError -> RestTerminalOutcome.FAILURE
+        else -> RestTerminalOutcome.SUCCESS
+    }
+}
+
+private enum class RestTerminalOutcome(
+    val label: String,
+    val outcome: GatewayOutcomeLabel,
+    val reason: GatewayFailureReasonLabel,
+) {
+    SUCCESS("success", GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+    ACCEPTED("accepted", GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+    NO_CONTENT("no_content", GatewayOutcomeLabel.SUCCESS, GatewayFailureReasonLabel.NONE),
+    NOT_FOUND("not_found", GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.NOT_FOUND),
+    MALFORMED_INPUT("malformed_input", GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.INVALID_REQUEST),
+    FAILURE("failure", GatewayOutcomeLabel.FAILURE, GatewayFailureReasonLabel.UNKNOWN),
+}
+
+private fun AgentKind.toTelemetryKind(): GatewayAgentKindLabel = GatewayAgentKindLabel.fromRaw(name)
+
+private fun toResponse(s: AgentSession) =
+    AgentResponse(
+        id = s.id,
+        kind = s.kind,
+        cwd = s.cwd,
+        createdAt = s.createdAt.toString(),
+        cliSessionId = s.cliSessionId,
+        stableSessionId = s.stableSessionId,
+        epoch = s.epoch,
+        continuation = s.continuation?.toDto(),
+    )
+
+private fun ContinuationMetadata.toDomain() =
+    AgentContinuation(
+        reason = reason,
+        previousEpoch = previousEpoch,
+        fromSetupLabel = fromSetupLabel,
+        toSetupLabel = toSetupLabel,
+    )
+
+private fun AgentContinuation.toDto() =
+    ContinuationMetadata(
+        reason = reason,
+        previousEpoch = previousEpoch,
+        fromSetupLabel = fromSetupLabel,
+        toSetupLabel = toSetupLabel,
+    )

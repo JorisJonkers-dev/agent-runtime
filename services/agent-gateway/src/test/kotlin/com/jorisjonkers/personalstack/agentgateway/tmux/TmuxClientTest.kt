@@ -126,7 +126,7 @@ class TmuxClientTest {
                 tmux = props.tmux.copy(stateDir = tmp.resolve("agent-gw").toString()),
             )
         val tmuxWithTmp = TmuxClient(runner, withTmp)
-        val dir = tmuxWithTmp.ensureStateDir()
+        val dir = tmuxWithTmp.stateDir
         assertThat(File(dir.toString())).exists().isDirectory()
     }
 

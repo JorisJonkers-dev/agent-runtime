@@ -1,5 +1,3 @@
-@file:Suppress("UnusedParameter")
-
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
@@ -25,9 +23,15 @@ class TranscriptTailerTest {
         store.recoverMetadata(stable)
         val frames = mutableListOf<TranscriptTextFrame>()
 
-        val result =
-            TranscriptTailer(store, stable, startOffset = 0, maxChunkChars = 2, onText = frames::add)
-                .use { it.replayAvailable() }
+        val tailer =
+            TranscriptTailer(
+                store,
+                stable,
+                startOffset = 0,
+                onText = frames::add,
+                options = TranscriptTailerOptions(maxChunkChars = 2),
+            )
+        val result = tailer.use { it.replayAvailable() }
 
         assertThat(result).isEqualTo(TranscriptReplayResult(bytes = 6, frames = 3, success = true))
         assertThat(frames.map { it.output }).containsExactly("ab", "cd", "ef")
@@ -35,9 +39,7 @@ class TranscriptTailerTest {
     }
 
     @Test
-    fun `replayAvailable reports bounded failure reason`(
-        @TempDir tmp: Path,
-    ) {
+    fun `replayAvailable reports bounded failure reason`() {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = mockk<TranscriptStore>()
         every { store.readRaw(stable, any(), any()) } throws IllegalStateException("x".repeat(400))
@@ -61,7 +63,14 @@ class TranscriptTailerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        val tailer = TranscriptTailer(store, stable, startOffset = 0, intervalMs = 20, onText = {})
+        val tailer =
+            TranscriptTailer(
+                store,
+                stable,
+                startOffset = 0,
+                onText = {},
+                options = TranscriptTailerOptions(intervalMs = 20),
+            )
 
         tailer.start()
         tailer.close()
@@ -84,7 +93,13 @@ class TranscriptTailerTest {
         store.open(stable, 1)
         val starts = mutableListOf<TranscriptTailerStartResult>()
         val tailer =
-            TranscriptTailer(store, stable, startOffset = 0, intervalMs = 20, onStart = starts::add, onText = {})
+            TranscriptTailer(
+                store,
+                stable,
+                startOffset = 0,
+                onText = {},
+                options = TranscriptTailerOptions(intervalMs = 20, onStart = starts::add),
+            )
 
         val result = tailer.start()
         tailer.close()
@@ -102,7 +117,13 @@ class TranscriptTailerTest {
         store.open(stable, 1)
         val starts = mutableListOf<TranscriptTailerStartResult>()
         val tailer =
-            TranscriptTailer(store, stable, startOffset = 0, intervalMs = 0, onStart = starts::add, onText = {})
+            TranscriptTailer(
+                store,
+                stable,
+                startOffset = 0,
+                onText = {},
+                options = TranscriptTailerOptions(intervalMs = 0, onStart = starts::add),
+            )
 
         val result = tailer.start()
         tailer.close()

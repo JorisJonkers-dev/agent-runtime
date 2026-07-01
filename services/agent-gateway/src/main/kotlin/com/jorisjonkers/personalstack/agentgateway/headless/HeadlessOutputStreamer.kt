@@ -107,24 +107,32 @@ class HeadlessOutputStreamer private constructor(
             }
         }
 
-        @Suppress("ReturnCount")
         private fun drainCompleteLines(file: Path) {
             RandomAccessFile(file.toFile(), "r").use { raf ->
                 val length = raf.length()
                 val currentOffset = offset.get()
-                if (length <= currentOffset) return
-                raf.seek(currentOffset)
-                val toRead = (length - currentOffset).coerceAtMost(MAX_READ_BYTES.toLong()).toInt()
-                val raw = ByteArray(toRead)
-                val read = raf.read(raw)
-                if (read <= 0) return
-                offset.addAndGet(read.toLong())
-                val buffer = if (pending.isEmpty()) raw.copyOf(read) else pending + raw.copyOf(read)
-                val complete = completeLineBytes(buffer, buffer.size)
-                if (complete == 0) {
-                    pending = buffer
-                    return
+                if (length > currentOffset) {
+                    raf.seek(currentOffset)
+                    val toRead = (length - currentOffset).coerceAtMost(MAX_READ_BYTES.toLong()).toInt()
+                    val raw = ByteArray(toRead)
+                    val read = raf.read(raw)
+                    if (read > 0) {
+                        offset.addAndGet(read.toLong())
+                        drainBufferedBytes(raw, read)
+                    }
                 }
+            }
+        }
+
+        private fun drainBufferedBytes(
+            raw: ByteArray,
+            read: Int,
+        ) {
+            val buffer = if (pending.isEmpty()) raw.copyOf(read) else pending + raw.copyOf(read)
+            val complete = completeLineBytes(buffer, buffer.size)
+            if (complete == 0) {
+                pending = buffer
+            } else {
                 emitLines(String(buffer, 0, complete, Charsets.UTF_8))
                 pending =
                     if (complete < buffer.size) {

@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit
  * caller (agents-api) should detect a missing job id and surface it
  * as a FAILED status.
  */
-@Suppress("LargeClass", "TooManyFunctions")
+@Suppress("TooManyFunctions")
 @Component
 class HeadlessJobManager(
     private val props: GatewayProperties,
@@ -52,25 +52,34 @@ class HeadlessJobManager(
     private val processes = ConcurrentHashMap<String, Process>()
     private val executor: ExecutorService = Executors.newVirtualThreadPerTaskExecutor()
 
-    @Suppress("LongMethod")
     fun launch(
         kind: AgentKind,
         prompt: String,
         workspacePath: String? = null,
         cliSessionId: String? = null,
         timeoutSeconds: Long = DEFAULT_TIMEOUT_SECONDS,
-        partialMessages: Boolean = false,
-    ): HeadlessJob {
+    ): HeadlessJob =
+        launch(
+            HeadlessLaunchRequest(
+                kind = kind,
+                prompt = prompt,
+                workspacePath = workspacePath,
+                cliSessionId = cliSessionId,
+                timeoutSeconds = timeoutSeconds,
+            ),
+        )
+
+    fun launch(request: HeadlessLaunchRequest): HeadlessJob {
         val id = UUID.randomUUID().toString().substring(0, 8)
-        val cwd = File(workspacePath ?: props.workspaceRoot)
+        val cwd = File(request.workspacePath ?: props.workspaceRoot)
         val stateDir = Path.of(props.tmux.stateDir).also { Files.createDirectories(it) }
         val outputFile = stateDir.resolve("headless-$id.jsonl")
         Files.createFile(outputFile)
-        val command = headlessCommandFor(kind, prompt, cliSessionId, partialMessages)
+        val command = headlessCommandFor(request.kind, request.prompt, request.cliSessionId, request.partialMessages)
         val job =
             HeadlessJob(
                 id = id,
-                kind = kind,
+                kind = request.kind,
                 status = HeadlessJobStatus.RUNNING,
                 outputFile = outputFile,
                 createdAt = Instant.now(),
@@ -78,13 +87,24 @@ class HeadlessJobManager(
         jobs[id] = job
         recordJobCounts()
         recordHeadlessJobEvent(
-            kind = kind,
+            kind = request.kind,
             operation = GatewayOperationLabel.SPAWN,
             outcome = GatewayOutcomeLabel.SUCCESS,
             duration = Duration.between(job.createdAt, Instant.now()),
         )
-        executor.submit { runJob(id, kind, command, cwd, outputFile.toFile(), timeoutSeconds) }
-        log.info("launched headless {} job {} in {}", kind, id, cwd)
+        executor.submit {
+            runJob(
+                HeadlessRunContext(
+                    id = id,
+                    kind = request.kind,
+                    command = command,
+                    cwd = cwd,
+                    outputFile = outputFile.toFile(),
+                    timeoutSeconds = request.timeoutSeconds,
+                ),
+            )
+        }
+        log.info("launched headless {} job {} in {}", request.kind, id, cwd)
         return job
     }
 
@@ -135,27 +155,19 @@ class HeadlessJobManager(
         executor.shutdownNow()
     }
 
-    @Suppress("LongMethod")
-    private fun runJob(
-        id: String,
-        kind: AgentKind,
-        command: List<String>,
-        cwd: File,
-        outputFile: File,
-        timeoutSeconds: Long,
-    ) {
+    private fun runJob(context: HeadlessRunContext) {
         val process =
-            startProcess(id, kind, command, cwd)
+            startProcess(context.id, context.kind, context.command, context.cwd)
                 ?: run {
-                    recordCleanup(kind, GatewayOutcomeLabel.SKIPPED, GatewayFailureReasonLabel.UNKNOWN)
+                    recordCleanup(context.kind, GatewayOutcomeLabel.SKIPPED, GatewayFailureReasonLabel.UNKNOWN)
                     return
                 }
-        processes[id] = process
+        processes[context.id] = process
         try {
-            awaitAndCapture(id, process, outputFile, timeoutSeconds)
+            awaitAndCapture(context.id, process, context.outputFile, context.timeoutSeconds)
         } catch (ex: InterruptedException) {
             process.destroyForcibly()
-            val cancelled = markJob(id, HeadlessJobStatus.CANCELLED)
+            val cancelled = markJob(context.id, HeadlessJobStatus.CANCELLED)
             cancelled?.let {
                 recordHeadlessJobEvent(
                     kind = it.kind,
@@ -166,15 +178,15 @@ class HeadlessJobManager(
                 )
             }
         } finally {
-            val removed = processes.remove(id)
+            val removed = processes.remove(context.id)
             val reason =
-                if (jobs[id]?.status == HeadlessJobStatus.CANCELLED) {
+                if (jobs[context.id]?.status == HeadlessJobStatus.CANCELLED) {
                     GatewayFailureReasonLabel.CANCELLED
                 } else {
                     GatewayFailureReasonLabel.NONE
                 }
             recordCleanup(
-                kind = kind,
+                kind = context.kind,
                 outcome = if (removed == null) GatewayOutcomeLabel.SKIPPED else GatewayOutcomeLabel.SUCCESS,
                 reason = reason,
             )
@@ -204,7 +216,6 @@ class HeadlessJobManager(
             null
         }
 
-    @Suppress("LongMethod")
     private fun awaitAndCapture(
         id: String,
         process: Process,
@@ -370,7 +381,7 @@ class HeadlessJobManager(
                     "--output-format",
                     "stream-json",
                 ) + (if (partialMessages) listOf("--include-partial-messages") else emptyList()) +
-                    (cliSessionId?.let { listOf("--resume", it) } ?: emptyList()) +
+                    cliSessionId?.let { listOf("--resume", it) }.orEmpty() +
                     listOf("--", prompt)
 
             AgentKind.CODEX ->
@@ -409,3 +420,21 @@ class HeadlessJobManager(
             }
     }
 }
+
+data class HeadlessLaunchRequest(
+    val kind: AgentKind,
+    val prompt: String,
+    val workspacePath: String? = null,
+    val cliSessionId: String? = null,
+    val timeoutSeconds: Long = HeadlessJobManager.DEFAULT_TIMEOUT_SECONDS,
+    val partialMessages: Boolean = false,
+)
+
+private data class HeadlessRunContext(
+    val id: String,
+    val kind: AgentKind,
+    val command: List<String>,
+    val cwd: File,
+    val outputFile: File,
+    val timeoutSeconds: Long,
+)

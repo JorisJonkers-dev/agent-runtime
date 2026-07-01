@@ -16,6 +16,7 @@ import java.nio.file.StandardOpenOption
 import java.time.Clock
 import java.time.Instant
 import java.util.Comparator
+import java.util.Locale
 import java.util.Properties
 import java.util.UUID
 import kotlin.io.path.Path
@@ -23,7 +24,7 @@ import kotlin.streams.toList
 
 @Component
 // Transcript metadata, leases, and segment paths share one lock namespace.
-@Suppress("LargeClass", "TooManyFunctions")
+@Suppress("TooManyFunctions")
 class TranscriptStore
     @Autowired
     constructor(
@@ -76,7 +77,6 @@ class TranscriptStore
         }
 
         // Lease validation and atomic persistence are kept together under one lock.
-        @Suppress("LongMethod")
         fun acquireLease(
             stableSessionId: String,
             owner: String,
@@ -122,28 +122,31 @@ class TranscriptStore
             }
         }
 
-        @Suppress("ReturnCount")
         fun renewLease(lease: TranscriptLease): TranscriptLease? {
             val id = validateStableSessionId(lease.stableSessionId)
             return synchronized(lockFor(id)) {
-                val existing = readLease(leaseFile(id)) ?: return null
-                if (existing.token != lease.token) return null
-                val renewed =
-                    existing.copy(
-                        expiresAtMillis = clock.millis() + props.transcripts.leaseTtlSeconds * MILLIS_PER_SECOND,
-                    )
-                writePropertiesAtomic(
-                    leaseFile(id),
-                    Properties().apply {
-                        this["stableSessionId"] = renewed.stableSessionId
-                        this["owner"] = renewed.owner
-                        this["token"] = renewed.token
-                        this["epoch"] = renewed.epoch.toString()
-                        this["expiresAtMillis"] = renewed.expiresAtMillis.toString()
-                    },
-                )
-                renewed
+                readLease(leaseFile(id))
+                    ?.takeIf { it.token == lease.token }
+                    ?.let(::renewExistingLease)
             }
+        }
+
+        private fun renewExistingLease(existing: TranscriptLease): TranscriptLease {
+            val renewed =
+                existing.copy(
+                    expiresAtMillis = clock.millis() + props.transcripts.leaseTtlSeconds * MILLIS_PER_SECOND,
+                )
+            writePropertiesAtomic(
+                leaseFile(renewed.stableSessionId),
+                Properties().apply {
+                    this["stableSessionId"] = renewed.stableSessionId
+                    this["owner"] = renewed.owner
+                    this["token"] = renewed.token
+                    this["epoch"] = renewed.epoch.toString()
+                    this["expiresAtMillis"] = renewed.expiresAtMillis.toString()
+                },
+            )
+            return renewed
         }
 
         fun activeSegmentPath(stableSessionId: String): Path {
@@ -280,7 +283,6 @@ class TranscriptStore
         }
 
         // Early exits map directly to cleanup safety gates.
-        @Suppress("ReturnCount")
         fun cleanup(stableSessionId: String): Boolean {
             val id = validateStableSessionId(stableSessionId)
             val removed =
@@ -325,7 +327,6 @@ class TranscriptStore
         }
 
         // The segment scan advances or stops at precise byte boundaries.
-        @Suppress("LoopWithTooManyJumpStatements")
         fun readRaw(
             stableSessionId: String,
             fromOffset: Long,
@@ -335,18 +336,31 @@ class TranscriptStore
             return synchronized(lockFor(id)) {
                 val metadata = recoverMetadata(id)
                 val start = fromOffset.coerceAtLeast(metadata.logicalStart)
-                if (start >= metadata.logicalEnd) {
-                    return TranscriptRawRead(startOffset = start, bytes = ByteArray(0), metadata = metadata)
-                }
-                val out = ByteArrayBuilder(maxBytes)
-                var segmentStart = metadata.logicalStart
-                for (segment in segmentFiles(id)) {
-                    val segmentSize = Files.size(segment)
-                    val segmentEnd = segmentStart + segmentSize
-                    if (segmentEnd <= start) {
-                        segmentStart = segmentEnd
-                        continue
+                val bytes =
+                    if (start >= metadata.logicalEnd) {
+                        ByteArray(0)
+                    } else {
+                        readSegments(id, start, maxBytes, metadata.logicalStart)
                     }
+                TranscriptRawRead(startOffset = start, bytes = bytes, metadata = metadata)
+            }
+        }
+
+        private fun readSegments(
+            stableSessionId: String,
+            start: Long,
+            maxBytes: Int,
+            logicalStart: Long,
+        ): ByteArray {
+            val out = ByteArrayBuilder(maxBytes)
+            var segmentStart = logicalStart
+            val segments = segmentFiles(stableSessionId)
+            var index = 0
+            while (index < segments.size && out.size < maxBytes) {
+                val segment = segments[index]
+                val segmentSize = Files.size(segment)
+                val segmentEnd = segmentStart + segmentSize
+                if (segmentEnd > start) {
                     val offsetInSegment = (start + out.size - segmentStart).coerceAtLeast(0)
                     if (offsetInSegment < segmentSize) {
                         Files.newInputStream(segment).use { input ->
@@ -354,11 +368,11 @@ class TranscriptStore
                             out.readFrom(input, maxBytes - out.size)
                         }
                     }
-                    if (out.size >= maxBytes) break
-                    segmentStart = segmentEnd
                 }
-                TranscriptRawRead(startOffset = start, bytes = out.toByteArray(), metadata = metadata)
+                segmentStart = segmentEnd
+                index++
             }
+            return out.toByteArray()
         }
 
         private fun sessionDir(stableSessionId: String): Path = root().resolve(stableSessionId)
@@ -375,7 +389,7 @@ class TranscriptStore
         private fun segmentPath(
             stableSessionId: String,
             index: Int,
-        ): Path = segmentsDir(stableSessionId).resolve("segment-%06d.log".format(index))
+        ): Path = segmentsDir(stableSessionId).resolve("segment-%06d.log".format(Locale.ROOT, index))
 
         private fun segmentFiles(stableSessionId: String): List<Path> {
             val dir = segmentsDir(stableSessionId)

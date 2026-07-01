@@ -1,5 +1,3 @@
-@file:Suppress("TooManyFunctions", "LargeClass", "TooGenericExceptionCaught", "LongMethod", "CyclomaticComplexMethod")
-
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
@@ -45,6 +43,7 @@ import kotlin.io.path.Path
  * surfacing as a 409.
  */
 @Component
+@Suppress("TooManyFunctions")
 class AgentSessionManager(
     private val tmux: TmuxClient,
     private val props: GatewayProperties,
@@ -84,6 +83,7 @@ class AgentSessionManager(
         recordActiveSessionCounts()
     }
 
+    @Suppress("LongMethod")
     private fun maintainTranscripts() {
         val cap = props.tmux.logCapBytes
         sessions.values.forEach { session ->
@@ -108,12 +108,14 @@ class AgentSessionManager(
                     val trimmed = transcriptStore.trimIfNeeded(stableSessionId)
                     if (trimmed.logicalStart > beforeTrim) {
                         recordSessionOperation(
-                            operation = GatewayOperationLabel.REPLAY,
-                            kind = current.kind.toTelemetryKind(),
-                            outcome = GatewayOutcomeLabel.SUCCESS,
-                            reason = GatewayFailureReasonLabel.NONE,
-                            startedAt = startedAt,
-                            observed = false,
+                            SessionOperationRecord(
+                                operation = GatewayOperationLabel.REPLAY,
+                                kind = current.kind.toTelemetryKind(),
+                                outcome = GatewayOutcomeLabel.SUCCESS,
+                                reason = GatewayFailureReasonLabel.NONE,
+                                startedAt = startedAt,
+                                observed = false,
+                            ),
                         )
                     }
                 } else {
@@ -122,149 +124,184 @@ class AgentSessionManager(
                         FileChannel.open(file, StandardOpenOption.WRITE).use { it.truncate(0) }
                         log.info("trimmed agent {} log past {} bytes", session.id, cap)
                         recordSessionOperation(
-                            operation = GatewayOperationLabel.REPLAY,
-                            kind = session.kind.toTelemetryKind(),
-                            outcome = GatewayOutcomeLabel.SUCCESS,
-                            reason = GatewayFailureReasonLabel.NONE,
-                            startedAt = startedAt,
-                            observed = false,
+                            SessionOperationRecord(
+                                operation = GatewayOperationLabel.REPLAY,
+                                kind = session.kind.toTelemetryKind(),
+                                outcome = GatewayOutcomeLabel.SUCCESS,
+                                reason = GatewayFailureReasonLabel.NONE,
+                                startedAt = startedAt,
+                                observed = false,
+                            ),
                         )
                     }
                 }
             }.onFailure {
                 recordSessionOperation(
-                    operation = GatewayOperationLabel.REPLAY,
-                    kind = session.kind.toTelemetryKind(),
-                    outcome = GatewayOutcomeLabel.FAILURE,
-                    reason = failureReasonLabel(it),
-                    startedAt = startedAt,
-                    observed = false,
-                    error = it,
+                    SessionOperationRecord(
+                        operation = GatewayOperationLabel.REPLAY,
+                        kind = session.kind.toTelemetryKind(),
+                        outcome = GatewayOutcomeLabel.FAILURE,
+                        reason = failureReasonLabel(it),
+                        startedAt = startedAt,
+                        observed = false,
+                        error = it,
+                    ),
                 )
                 log.warn("trim of {} failed: {}", session.logFile, it.message)
             }
         }
     }
 
-    // Lease cleanup must stay adjacent to transcript and tmux startup ordering.
-    @Suppress("CyclomaticComplexMethod", "LongMethod", "ThrowsCount")
     fun spawn(
         kind: AgentKind,
         workspacePath: String? = null,
         stableSessionId: String? = null,
         epoch: Long? = null,
         continuation: AgentContinuation? = null,
-        resumeCliSessionId: String? = null,
-    ): AgentSession {
+    ): AgentSession =
+        spawn(
+            AgentSpawnRequest(
+                kind = kind,
+                workspacePath = workspacePath,
+                stableSessionId = stableSessionId,
+                epoch = epoch,
+                continuation = continuation,
+            ),
+        )
+
+    fun spawn(
+        kind: AgentKind,
+        workspacePath: String? = null,
+        resumeCliSessionId: String,
+    ): AgentSession =
+        spawn(
+            AgentSpawnRequest(
+                kind = kind,
+                workspacePath = workspacePath,
+                resumeCliSessionId = resumeCliSessionId,
+            ),
+        )
+
+    // Lease cleanup must stay adjacent to transcript and tmux startup ordering.
+    @Suppress("CyclomaticComplexMethod", "LongMethod", "ThrowsCount")
+    fun spawn(request: AgentSpawnRequest): AgentSession {
         val startedAt = Instant.now()
-        val telemetryKind = kind.toTelemetryKind()
+        val telemetryKind = request.kind.toTelemetryKind()
         var outcome = GatewayOutcomeLabel.SUCCESS
         var reason = GatewayFailureReasonLabel.NONE
         var failure: Throwable? = null
         val observation = startSessionObservation(GatewayOperationLabel.SPAWN, telemetryKind)
         try {
-            val id = UUID.randomUUID().toString().substring(0, 8)
-            val tmuxSession = "agent-$id"
-            val requestedCwd = workspacePath ?: props.workspaceRoot
-            val durableStableSessionId =
-                stableSessionId?.let(transcriptStore::validateStableSessionId)
-                    ?: UUID.randomUUID().toString()
-            val durableEpoch = epoch ?: 1
-            require(durableEpoch > 0) { "epoch must be positive" }
-            val lease = transcriptStore.acquireLease(durableStableSessionId, tmuxSession, durableEpoch)
-            val logFile: Path =
-                try {
-                    transcriptStore.open(durableStableSessionId, durableEpoch)
-                    if (durableEpoch > 1 || continuation != null) {
-                        transcriptStore.appendContinuationDelimiter(durableStableSessionId, durableEpoch, continuation)
+            return runCatching {
+                val id = UUID.randomUUID().toString().substring(0, 8)
+                val tmuxSession = "agent-$id"
+                val requestedCwd = request.workspacePath ?: props.workspaceRoot
+                val durableStableSessionId =
+                    request.stableSessionId?.let(transcriptStore::validateStableSessionId)
+                        ?: UUID.randomUUID().toString()
+                val durableEpoch = request.epoch ?: 1
+                require(durableEpoch > 0) { "epoch must be positive" }
+                val lease = transcriptStore.acquireLease(durableStableSessionId, tmuxSession, durableEpoch)
+                val logFile: Path =
+                    try {
+                        transcriptStore.open(durableStableSessionId, durableEpoch)
+                        if (durableEpoch > 1 || request.continuation != null) {
+                            transcriptStore.appendContinuationDelimiter(
+                                durableStableSessionId,
+                                durableEpoch,
+                                request.continuation,
+                            )
+                        }
+                        transcriptStore.activeSegmentPath(durableStableSessionId)
+                    } catch (e: IOException) {
+                        transcriptStore.releaseLease(lease)
+                        throw e
+                    } catch (e: NumberFormatException) {
+                        transcriptStore.releaseLease(lease)
+                        throw e
+                    } catch (e: IllegalArgumentException) {
+                        transcriptStore.releaseLease(lease)
+                        throw e
+                    } catch (e: IllegalStateException) {
+                        transcriptStore.releaseLease(lease)
+                        throw e
                     }
-                    transcriptStore.activeSegmentPath(durableStableSessionId)
+
+                val codexHome = if (request.kind == AgentKind.CODEX) codexSessionHome(durableStableSessionId) else null
+                codexHome?.let(::prepareCodexHome)
+                val launch = commandAndSessionIdFor(request.kind, requestedCwd, request.resumeCliSessionId, codexHome)
+                try {
+                    tmux.newSession(tmuxSession, launch.command, launch.cwd)
+                    tmux.startPipeToFile(tmuxSession, logFile)
                 } catch (e: IOException) {
                     transcriptStore.releaseLease(lease)
                     throw e
-                } catch (e: NumberFormatException) {
+                } catch (e: InterruptedException) {
                     transcriptStore.releaseLease(lease)
                     throw e
-                } catch (e: IllegalArgumentException) {
+                } catch (e: ProcessFailedException) {
                     transcriptStore.releaseLease(lease)
                     throw e
-                } catch (e: IllegalStateException) {
+                } catch (e: ProcessTimeoutException) {
+                    transcriptStore.releaseLease(lease)
+                    throw e
+                } catch (e: SecurityException) {
                     transcriptStore.releaseLease(lease)
                     throw e
                 }
 
-            val codexHome = if (kind == AgentKind.CODEX) codexSessionHome(durableStableSessionId) else null
-            codexHome?.let(::prepareCodexHome)
-            val launch = commandAndSessionIdFor(kind, requestedCwd, resumeCliSessionId, codexHome)
-            try {
-                tmux.newSession(tmuxSession, launch.command, launch.cwd)
-                tmux.startPipeToFile(tmuxSession, logFile)
-            } catch (e: IOException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            } catch (e: InterruptedException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            } catch (e: ProcessFailedException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            } catch (e: ProcessTimeoutException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            } catch (e: SecurityException) {
-                transcriptStore.releaseLease(lease)
-                throw e
-            }
+                // Codex's native id only exists once it writes the rollout at
+                // session start; capture it from the isolated home (fresh case).
+                // Claude and Codex-resume already know their id at build time.
+                val cliSessionId =
+                    launch.cliSessionId
+                        ?: codexHome?.takeIf { request.kind == AgentKind.CODEX }?.let(::captureCodexSessionId)
 
-            // Codex's native id only exists once it writes the rollout at
-            // session start; capture it from the isolated home (fresh case).
-            // Claude and Codex-resume already know their id at build time.
-            val cliSessionId =
-                launch.cliSessionId
-                    ?: codexHome?.takeIf { kind == AgentKind.CODEX }?.let(::captureCodexSessionId)
-
-            val session =
-                AgentSession(
-                    id = id,
-                    kind = kind,
-                    tmuxSession = tmuxSession,
-                    logFile = logFile,
-                    cwd = launch.cwd,
-                    createdAt = Instant.now(),
-                    cliSessionId = cliSessionId,
-                    stableSessionId = durableStableSessionId,
-                    epoch = durableEpoch,
-                    continuation = continuation,
-                    transcriptFile = logFile,
-                    transcriptLease = lease,
+                val session =
+                    AgentSession(
+                        id = id,
+                        kind = request.kind,
+                        tmuxSession = tmuxSession,
+                        logFile = logFile,
+                        cwd = launch.cwd,
+                        createdAt = Instant.now(),
+                        cliSessionId = cliSessionId,
+                        stableSessionId = durableStableSessionId,
+                        epoch = durableEpoch,
+                        continuation = request.continuation,
+                        transcriptFile = logFile,
+                        transcriptLease = lease,
+                    )
+                sessions[id] = session
+                recordActiveSessionCounts()
+                log.info(
+                    "spawned {} agent {} ({}) in {} cliSessionId={} stableSessionId={} epoch={}",
+                    request.kind,
+                    id,
+                    tmuxSession,
+                    launch.cwd,
+                    cliSessionId,
+                    durableStableSessionId,
+                    durableEpoch,
                 )
-            sessions[id] = session
-            recordActiveSessionCounts()
-            log.info(
-                "spawned {} agent {} ({}) in {} cliSessionId={} stableSessionId={} epoch={}",
-                kind,
-                id,
-                tmuxSession,
-                launch.cwd,
-                cliSessionId,
-                durableStableSessionId,
-                durableEpoch,
-            )
-            return session
-        } catch (e: Exception) {
-            outcome = GatewayOutcomeLabel.FAILURE
-            reason = failureReasonLabel(e)
-            failure = e
-            throw e
+                session
+            }.getOrElse { error ->
+                outcome = GatewayOutcomeLabel.FAILURE
+                reason = failureReasonLabel(error)
+                failure = error
+                throw error
+            }
         } finally {
             recordSessionOperation(
-                operation = GatewayOperationLabel.SPAWN,
-                kind = telemetryKind,
-                outcome = outcome,
-                reason = reason,
-                startedAt = startedAt,
-                observation = observation,
-                error = failure,
+                SessionOperationRecord(
+                    operation = GatewayOperationLabel.SPAWN,
+                    kind = telemetryKind,
+                    outcome = outcome,
+                    reason = reason,
+                    startedAt = startedAt,
+                    observation = observation,
+                    error = failure,
+                ),
             )
         }
     }
@@ -277,33 +314,37 @@ class AgentSessionManager(
         var failure: Throwable? = null
         var observation: Observation? = null
         try {
-            val session = sessions.remove(id) ?: return false
-            kind = session.kind.toTelemetryKind()
-            observation = startSessionObservation(GatewayOperationLabel.STOP, kind)
-            tmux.killSession(session.tmuxSession)
-            session.stableSessionId?.let {
-                transcriptStore.seal(it)
-                session.transcriptLease?.let(transcriptStore::releaseLease)
+            return runCatching {
+                val session = sessions.remove(id) ?: return@runCatching false
+                kind = session.kind.toTelemetryKind()
+                observation = startSessionObservation(GatewayOperationLabel.STOP, kind)
+                tmux.killSession(session.tmuxSession)
+                session.stableSessionId?.let {
+                    transcriptStore.seal(it)
+                    session.transcriptLease?.let(transcriptStore::releaseLease)
+                }
+                outcome = GatewayOutcomeLabel.SUCCESS
+                reason = GatewayFailureReasonLabel.NONE
+                log.info("stopped agent {}", id)
+                true
+            }.getOrElse { error ->
+                outcome = GatewayOutcomeLabel.FAILURE
+                reason = failureReasonLabel(error)
+                failure = error
+                throw error
             }
-            outcome = GatewayOutcomeLabel.SUCCESS
-            reason = GatewayFailureReasonLabel.NONE
-            log.info("stopped agent {}", id)
-            return true
-        } catch (e: Exception) {
-            outcome = GatewayOutcomeLabel.FAILURE
-            reason = failureReasonLabel(e)
-            failure = e
-            throw e
         } finally {
             recordActiveSessionCounts()
             recordSessionOperation(
-                operation = GatewayOperationLabel.STOP,
-                kind = kind,
-                outcome = outcome,
-                reason = reason,
-                startedAt = startedAt,
-                observation = observation,
-                error = failure,
+                SessionOperationRecord(
+                    operation = GatewayOperationLabel.STOP,
+                    kind = kind,
+                    outcome = outcome,
+                    reason = reason,
+                    startedAt = startedAt,
+                    observation = observation,
+                    error = failure,
+                ),
             )
         }
     }
@@ -335,26 +376,30 @@ class AgentSessionManager(
         var reason = GatewayFailureReasonLabel.NONE
         var failure: Throwable? = null
         try {
-            val ok = transcriptStore.cleanup(transcriptStore.validateStableSessionId(stableSessionId))
-            if (!ok) {
+            return runCatching {
+                val ok = transcriptStore.cleanup(transcriptStore.validateStableSessionId(stableSessionId))
+                if (!ok) {
+                    outcome = GatewayOutcomeLabel.FAILURE
+                    reason = GatewayFailureReasonLabel.NOT_FOUND
+                }
+                ok
+            }.getOrElse { error ->
                 outcome = GatewayOutcomeLabel.FAILURE
-                reason = GatewayFailureReasonLabel.NOT_FOUND
+                reason = failureReasonLabel(error)
+                failure = error
+                throw error
             }
-            return ok
-        } catch (e: Exception) {
-            outcome = GatewayOutcomeLabel.FAILURE
-            reason = failureReasonLabel(e)
-            failure = e
-            throw e
         } finally {
             recordSessionOperation(
-                operation = GatewayOperationLabel.REPLAY,
-                kind = GatewayAgentKindLabel.OTHER,
-                outcome = outcome,
-                reason = reason,
-                startedAt = startedAt,
-                observed = false,
-                error = failure,
+                SessionOperationRecord(
+                    operation = GatewayOperationLabel.REPLAY,
+                    kind = GatewayAgentKindLabel.OTHER,
+                    outcome = outcome,
+                    reason = reason,
+                    startedAt = startedAt,
+                    observed = false,
+                    error = failure,
+                ),
             )
         }
     }
@@ -428,25 +473,29 @@ class AgentSessionManager(
         var failure: Throwable? = null
         var observation: Observation? = null
         try {
-            val session = sessions[id] ?: error("unknown agent: $id")
-            kind = session.kind.toTelemetryKind()
-            if (observed) observation = startSessionObservation(operation, kind)
-            return block(session)
-        } catch (e: Exception) {
-            outcome = GatewayOutcomeLabel.FAILURE
-            reason = failureReasonLabel(e)
-            failure = e
-            throw e
+            return runCatching {
+                val session = sessions[id] ?: error("unknown agent: $id")
+                kind = session.kind.toTelemetryKind()
+                if (observed) observation = startSessionObservation(operation, kind)
+                block(session)
+            }.getOrElse { error ->
+                outcome = GatewayOutcomeLabel.FAILURE
+                reason = failureReasonLabel(error)
+                failure = error
+                throw error
+            }
         } finally {
             recordSessionOperation(
-                operation = operation,
-                kind = kind,
-                outcome = outcome,
-                reason = reason,
-                startedAt = startedAt,
-                observed = observed,
-                observation = observation,
-                error = failure,
+                SessionOperationRecord(
+                    operation = operation,
+                    kind = kind,
+                    outcome = outcome,
+                    reason = reason,
+                    startedAt = startedAt,
+                    observed = observed,
+                    observation = observation,
+                    error = failure,
+                ),
             )
         }
     }
@@ -475,30 +524,22 @@ class AgentSessionManager(
             .lowCardinalityKeyValue("kind", kind.label)
             .lowCardinalityKeyValue("mode", GatewayModeLabel.INTERACTIVE.label)
 
-    private fun recordSessionOperation(
-        operation: GatewayOperationLabel,
-        kind: GatewayAgentKindLabel,
-        outcome: GatewayOutcomeLabel,
-        reason: GatewayFailureReasonLabel,
-        startedAt: Instant,
-        observed: Boolean = true,
-        observation: Observation? = null,
-        error: Throwable? = null,
-    ) {
-        val activeObservation = observation ?: if (observed) startSessionObservation(operation, kind) else null
+    private fun recordSessionOperation(record: SessionOperationRecord) {
+        val activeObservation =
+            record.observation ?: if (record.observed) startSessionObservation(record.operation, record.kind) else null
         activeObservation
-            ?.lowCardinalityKeyValue("outcome", outcome.label)
-            ?.lowCardinalityKeyValue("reason", reason.label)
-        error?.let { activeObservation?.error(it) }
+            ?.lowCardinalityKeyValue("outcome", record.outcome.label)
+            ?.lowCardinalityKeyValue("reason", record.reason.label)
+        record.error?.let { activeObservation?.error(it) }
         activeObservation?.stop()
         telemetry.recordOperation(
             GatewayOperationTelemetry(
-                operation = operation,
-                kind = kind,
+                operation = record.operation,
+                kind = record.kind,
                 mode = GatewayModeLabel.INTERACTIVE,
-                outcome = outcome,
-                reason = reason,
-                duration = Duration.between(startedAt, Instant.now()),
+                outcome = record.outcome,
+                reason = record.reason,
+                duration = Duration.between(record.startedAt, Instant.now()),
             ),
         )
     }
@@ -583,8 +624,8 @@ class AgentSessionManager(
             AgentKind.CODEX -> {
                 // `env CODEX_HOME=<home>` scopes this session's rollouts
                 // independently of the shared tmux server environment.
-                val envPrefix = codexHome?.let { listOf("env", "CODEX_HOME=$it") } ?: emptyList()
-                val resumeArgs = resumeCliSessionId?.let { listOf("resume", it) } ?: emptyList()
+                val envPrefix = codexHome?.let { listOf("env", "CODEX_HOME=$it") }.orEmpty()
+                val resumeArgs = resumeCliSessionId?.let { listOf("resume", it) }.orEmpty()
                 AgentCommand(
                     command = envPrefix + listOf(props.cli.codex) + props.cli.codexArgs + resumeArgs,
                     cliSessionId = resumeCliSessionId,
@@ -638,18 +679,23 @@ class AgentSessionManager(
         return null
     }
 
-    @Suppress("ReturnCount")
     private fun newestRolloutId(sessionsDir: Path): String? {
-        if (!Files.isDirectory(sessionsDir)) return null
         val newest =
-            Files.walk(sessionsDir).use { stream ->
-                stream
-                    .filter { Files.isRegularFile(it) && ROLLOUT_FILE.matches(it.fileName.toString()) }
-                    .max(compareBy { runCatching { Files.getLastModifiedTime(it).toMillis() }.getOrDefault(0L) })
-                    .orElse(null)
-            } ?: return null
-        return ROLLOUT_ID.find(newest.fileName.toString())?.groupValues?.get(1)
+            if (Files.isDirectory(sessionsDir)) {
+                newestRolloutFile(sessionsDir)
+            } else {
+                null
+            }
+        return newest?.let { ROLLOUT_ID.find(it.fileName.toString())?.groupValues?.get(1) }
     }
+
+    private fun newestRolloutFile(sessionsDir: Path): Path? =
+        Files.walk(sessionsDir).use { stream ->
+            stream
+                .filter { Files.isRegularFile(it) && ROLLOUT_FILE.matches(it.fileName.toString()) }
+                .max(compareBy { runCatching { Files.getLastModifiedTime(it).toMillis() }.getOrDefault(0L) })
+                .orElse(null)
+        }
 
     private fun safeFileName(requestedName: String?): String {
         val raw = requestedName?.trim()?.takeIf { it.isNotBlank() } ?: DEFAULT_STAGED_INPUT_NAME
@@ -682,5 +728,16 @@ class AgentSessionManager(
         val command: List<String>,
         val cliSessionId: String?,
         val cwd: String,
+    )
+
+    private data class SessionOperationRecord(
+        val operation: GatewayOperationLabel,
+        val kind: GatewayAgentKindLabel,
+        val outcome: GatewayOutcomeLabel,
+        val reason: GatewayFailureReasonLabel,
+        val startedAt: Instant,
+        val observed: Boolean = true,
+        val observation: Observation? = null,
+        val error: Throwable? = null,
     )
 }

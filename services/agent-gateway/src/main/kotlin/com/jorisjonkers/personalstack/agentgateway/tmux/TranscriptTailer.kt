@@ -1,5 +1,3 @@
-@file:Suppress("LongMethod")
-
 package com.jorisjonkers.personalstack.agentgateway.tmux
 
 import io.micrometer.observation.Observation
@@ -13,12 +11,8 @@ class TranscriptTailer(
     private val store: TranscriptStore,
     private val stableSessionId: String,
     startOffset: Long,
-    private val intervalMs: Long = 40,
-    private val maxChunkChars: Int = LogTailer.MAX_CHUNK_CHARS,
-    private val onTrim: (Long) -> Unit = {},
-    private val onStart: (TranscriptTailerStartResult) -> Unit = {},
-    private val observationRegistry: ObservationRegistry = ObservationRegistry.NOOP,
     private val onText: (TranscriptTextFrame) -> Unit,
+    private val options: TranscriptTailerOptions = TranscriptTailerOptions(),
 ) : AutoCloseable {
     private val log = LoggerFactory.getLogger(TranscriptTailer::class.java)
     private var offset = startOffset
@@ -32,18 +26,18 @@ class TranscriptTailer(
     fun start(): TranscriptTailerStartResult {
         val result =
             runCatching {
-                executor.scheduleWithFixedDelay(::poll, 0, intervalMs, TimeUnit.MILLISECONDS)
+                executor.scheduleWithFixedDelay(::poll, 0, options.intervalMs, TimeUnit.MILLISECONDS)
                 TranscriptTailerStartResult(success = true)
             }.getOrElse {
                 TranscriptTailerStartResult(success = false, failureReason = failureReason(it))
             }
         observeStart(result)
-        onStart(result)
+        options.onStart(result)
         return result
     }
 
     fun replayAvailable(): TranscriptReplayResult {
-        val observation = Observation.start("agent.gateway.transcript.replay", observationRegistry)
+        val observation = Observation.start("agent.gateway.transcript.replay", options.observationRegistry)
         var bytes = 0L
         var frames = 0L
         while (true) {
@@ -83,30 +77,43 @@ class TranscriptTailer(
             TranscriptPollResult(failureReason = failureReason(it))
         }
 
-    @Suppress("ReturnCount")
     private fun pollOnceUnchecked(): TranscriptPollResult {
         val read = store.readRaw(stableSessionId, offset)
         if (read.startOffset > offset) {
             carry = ByteArray(0)
             offset = read.startOffset
-            onTrim(offset)
+            options.onTrim(offset)
         }
-        if (read.bytes.isEmpty()) return TranscriptPollResult()
+        return if (read.bytes.isEmpty()) {
+            TranscriptPollResult()
+        } else {
+            emitCompleteFrames(read)
+        }
+    }
 
+    private fun emitCompleteFrames(read: TranscriptRawRead): TranscriptPollResult {
         val readEnd = read.startOffset + read.bytes.size
-        val buf = if (carry.isEmpty()) read.bytes else carry + read.bytes
-        val complete = LogTailer.completeUtf8Length(buf)
-        carry = if (complete < buf.size) buf.copyOfRange(complete, buf.size) else EMPTY
+        val buffer = if (carry.isEmpty()) read.bytes else carry + read.bytes
+        val complete = LogTailer.completeUtf8Length(buffer)
+        carry = if (complete < buffer.size) buffer.copyOfRange(complete, buffer.size) else EMPTY
         offset = readEnd
-        if (complete == 0) return TranscriptPollResult()
+        return if (complete == 0) {
+            TranscriptPollResult()
+        } else {
+            emitFrames(buffer, complete, readEnd - carry.size - complete)
+        }
+    }
 
-        val completeEnd = readEnd - carry.size
-        val completeStart = completeEnd - complete
+    private fun emitFrames(
+        buffer: ByteArray,
+        complete: Int,
+        completeStart: Long,
+    ): TranscriptPollResult {
         var frameStart = completeStart
         var bytes = 0L
         var frames = 0L
         var failure: String? = null
-        LogTailer.chunked(String(buf, 0, complete, Charsets.UTF_8), maxChunkChars) { text ->
+        LogTailer.chunked(String(buffer, 0, complete, Charsets.UTF_8), options.maxChunkChars) { text ->
             if (failure != null) return@chunked
             val frameBytes = text.toByteArray(Charsets.UTF_8).size
             frameStart += frameBytes
@@ -131,7 +138,7 @@ class TranscriptTailer(
 
     private fun observeStart(result: TranscriptTailerStartResult) {
         Observation
-            .start("agent.gateway.transcript.tailer.start", observationRegistry)
+            .start("agent.gateway.transcript.tailer.start", options.observationRegistry)
             .lowCardinalityKeyValue("outcome", if (result.success) "success" else "failure")
             .lowCardinalityKeyValue("reason", if (result.success) "none" else "other")
             .stop()
@@ -153,6 +160,14 @@ class TranscriptTailer(
         private const val MAX_FAILURE_REASON_CHARS = 160
     }
 }
+
+data class TranscriptTailerOptions(
+    val intervalMs: Long = 40,
+    val maxChunkChars: Int = LogTailer.MAX_CHUNK_CHARS,
+    val onTrim: (Long) -> Unit = {},
+    val onStart: (TranscriptTailerStartResult) -> Unit = {},
+    val observationRegistry: ObservationRegistry = ObservationRegistry.NOOP,
+)
 
 data class TranscriptTextFrame(
     val output: String,

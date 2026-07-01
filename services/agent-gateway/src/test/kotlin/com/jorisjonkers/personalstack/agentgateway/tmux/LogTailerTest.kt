@@ -128,8 +128,15 @@ class LogTailerTest {
         store.recoverMetadata(stable)
         val frames = CopyOnWriteArrayList<TranscriptTextFrame>()
 
-        TranscriptTailer(store, stable, startOffset = 2, intervalMs = 20, maxChunkChars = 2, onText = frames::add)
-            .use { it.replayAvailable() }
+        val tailer =
+            TranscriptTailer(
+                store,
+                stable,
+                startOffset = 2,
+                onText = frames::add,
+                options = TranscriptTailerOptions(intervalMs = 20, maxChunkChars = 2),
+            )
+        tailer.use { it.replayAvailable() }
 
         assertThat(frames.map { it.output }).containsExactly("éZ")
         assertThat(frames.map { it.off }).containsExactly(5L)
@@ -143,7 +150,13 @@ class LogTailerTest {
         val store = transcriptStore(tmp)
         store.open(stable, 1)
         val received = CopyOnWriteArrayList<TranscriptTextFrame>()
-        TranscriptTailer(store, stable, startOffset = 0, intervalMs = 20, onText = received::add).use { tailer ->
+        TranscriptTailer(
+            store,
+            stable,
+            startOffset = 0,
+            onText = received::add,
+            options = TranscriptTailerOptions(intervalMs = 20),
+        ).use { tailer ->
             tailer.start()
             Files.write(
                 store.activeSegmentPath(stable),

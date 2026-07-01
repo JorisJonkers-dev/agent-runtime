@@ -24,7 +24,7 @@ class ErrorAdvice {
     fun onTimeout(e: ProcessTimeoutException): ResponseEntity<Map<String, String>> =
         ResponseEntity
             .status(HttpStatus.GATEWAY_TIMEOUT)
-            .body(mapOf("error" to "timeout", "message" to (e.message ?: "")))
+            .body(mapOf("error" to "timeout", "message" to e.message.orEmpty()))
 
     @ExceptionHandler(IllegalStateException::class)
     fun onIllegalState(e: IllegalStateException): ResponseEntity<Map<String, String>> =

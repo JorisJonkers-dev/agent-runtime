@@ -19,18 +19,18 @@ import kotlin.io.path.Path
  * pipe-pane targeting.
  */
 @Component
-@Suppress("TooManyFunctions")
 class TmuxClient(
     private val runner: ProcessRunner,
     private val props: GatewayProperties,
 ) {
     private val log = LoggerFactory.getLogger(TmuxClient::class.java)
 
-    fun ensureStateDir(): Path {
-        val dir = Path(props.tmux.stateDir)
-        Files.createDirectories(dir)
-        return dir
-    }
+    val stateDir: Path
+        get() {
+            val dir = Path(props.tmux.stateDir)
+            Files.createDirectories(dir)
+            return dir
+        }
 
     fun newSession(
         name: String,
@@ -38,7 +38,7 @@ class TmuxClient(
         cwd: String,
         env: Map<String, String> = emptyMap(),
     ) {
-        ensureStateDir()
+        stateDir
         val argv =
             mutableListOf(
                 "tmux",
