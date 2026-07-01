@@ -27,7 +27,7 @@ name: 'CI'
     'uses': 'JorisJonkers-dev/github-workflows/.github/workflows/jvm-ci.yml@v0.8.0'
     'with':
       'gradle-command': './gradlew'
-      'lint-gradle-args': ':services:agent-gateway:detekt :services:agent-gateway:ktlintCheck'
+      'lint-gradle-args': ':services:agent-gateway:detektMain :services:agent-gateway:detektTest :services:agent-gateway:detektIntegrationTest :services:agent-gateway:ktlintCheck'
       'test-gradle-args': ':services:agent-gateway:test :services:agent-gateway:integrationTest :services:agent-gateway:jacocoTestCoverageVerification :services:agent-gateway:bootJar'
     'secrets':
       'packages-token': '${{ secrets.GITHUB_TOKEN }}'
