@@ -19,12 +19,7 @@ import java.time.ZoneOffset
 class TranscriptStoreTest {
     private fun store(
         tmp: Path,
-        segmentBytes: Long = 8,
-        capBytes: Long = 16,
-        leaseTtlSeconds: Long = 60,
-        retentionSeconds: Long = 0,
-        clock: Clock = Clock.fixed(Instant.parse("2026-06-12T09:00:00Z"), ZoneOffset.UTC),
-        telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
+        options: StoreOptions = StoreOptions(),
     ): TranscriptStore =
         TranscriptStore(
             GatewayProperties(
@@ -33,15 +28,24 @@ class TranscriptStoreTest {
                 cli = GatewayProperties.Cli(claude = "claude", codex = "codex"),
                 transcripts =
                     GatewayProperties.Transcripts(
-                        segmentBytes = segmentBytes,
-                        capBytes = capBytes,
-                        leaseTtlSeconds = leaseTtlSeconds,
-                        retentionSeconds = retentionSeconds,
+                        segmentBytes = options.segmentBytes,
+                        capBytes = options.capBytes,
+                        leaseTtlSeconds = options.leaseTtlSeconds,
+                        retentionSeconds = options.retentionSeconds,
                     ),
             ),
-            clock,
-            telemetry,
+            options.clock,
+            options.telemetry,
         )
+
+    private data class StoreOptions(
+        val segmentBytes: Long = 8,
+        val capBytes: Long = 16,
+        val leaseTtlSeconds: Long = 60,
+        val retentionSeconds: Long = 0,
+        val clock: Clock = Clock.fixed(Instant.parse("2026-06-12T09:00:00Z"), ZoneOffset.UTC),
+        val telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
+    )
 
     @Test
     fun `active segment path lives under workspace transcript directory`(
@@ -76,7 +80,7 @@ class TranscriptStoreTest {
     fun `rotation creates a new append-only active segment`(
         @TempDir tmp: Path,
     ) {
-        val store = store(tmp, segmentBytes = 4)
+        val store = store(tmp, StoreOptions(segmentBytes = 4))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
         Files.writeString(store.activeSegmentPath(stable), "1234", StandardOpenOption.APPEND)
@@ -91,7 +95,7 @@ class TranscriptStoreTest {
     fun `front trim deletes only closed segments and advances logical start`(
         @TempDir tmp: Path,
     ) {
-        val store = store(tmp, segmentBytes = 4, capBytes = 8)
+        val store = store(tmp, StoreOptions(segmentBytes = 4, capBytes = 8))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
         Files.writeString(store.activeSegmentPath(stable), "1111", StandardOpenOption.APPEND)
@@ -115,14 +119,14 @@ class TranscriptStoreTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val early = Clock.fixed(Instant.parse("2026-06-12T09:00:00Z"), ZoneOffset.UTC)
         val late = Clock.fixed(Instant.parse("2026-06-12T09:02:00Z"), ZoneOffset.UTC)
-        val first = store(tmp, leaseTtlSeconds = 30, clock = early)
+        val first = store(tmp, StoreOptions(leaseTtlSeconds = 30, clock = early))
         first.acquireLease(stable, "owner-a", 1)
 
         assertThatThrownBy { first.acquireLease(stable, "owner-b", 1) }
             .isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("leased by owner-a")
 
-        val recovered = store(tmp, leaseTtlSeconds = 30, clock = late).acquireLease(stable, "owner-b", 1)
+        val recovered = store(tmp, StoreOptions(leaseTtlSeconds = 30, clock = late)).acquireLease(stable, "owner-b", 1)
         assertThat(recovered.owner).isEqualTo("owner-b")
     }
 
@@ -133,9 +137,11 @@ class TranscriptStoreTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val firstClock = Clock.fixed(Instant.parse("2026-06-12T09:00:00Z"), ZoneOffset.UTC)
         val secondClock = Clock.fixed(Instant.parse("2026-06-12T09:00:20Z"), ZoneOffset.UTC)
-        val lease = store(tmp, leaseTtlSeconds = 30, clock = firstClock).acquireLease(stable, "owner-a", 1)
+        val lease =
+            store(tmp, StoreOptions(leaseTtlSeconds = 30, clock = firstClock))
+                .acquireLease(stable, "owner-a", 1)
 
-        val renewed = store(tmp, leaseTtlSeconds = 30, clock = secondClock).renewLease(lease)
+        val renewed = store(tmp, StoreOptions(leaseTtlSeconds = 30, clock = secondClock)).renewLease(lease)
 
         assertThat(renewed).isNotNull
         assertThat(renewed!!.token).isEqualTo(lease.token)
@@ -146,7 +152,7 @@ class TranscriptStoreTest {
     fun `cleanup removes sealed retained transcript by stable uuid`(
         @TempDir tmp: Path,
     ) {
-        val store = store(tmp, retentionSeconds = 0)
+        val store = store(tmp, StoreOptions(retentionSeconds = 0))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
         val path = store.activeSegmentPath(stable)
@@ -162,7 +168,7 @@ class TranscriptStoreTest {
         @TempDir tmp: Path,
     ) {
         val registry = SimpleMeterRegistry()
-        val store = store(tmp, capBytes = 123, telemetry = MicrometerAgentGatewayTelemetry(registry))
+        val store = store(tmp, StoreOptions(capBytes = 123, telemetry = MicrometerAgentGatewayTelemetry(registry)))
 
         val stats = store.refreshStorageStats()
 
@@ -178,7 +184,7 @@ class TranscriptStoreTest {
         @TempDir tmp: Path,
     ) {
         val registry = SimpleMeterRegistry()
-        val store = store(tmp, telemetry = MicrometerAgentGatewayTelemetry(registry))
+        val store = store(tmp, StoreOptions(telemetry = MicrometerAgentGatewayTelemetry(registry)))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
         Files.writeString(store.activeSegmentPath(stable), "one", StandardOpenOption.APPEND)
@@ -200,7 +206,7 @@ class TranscriptStoreTest {
     fun `storage stats include inactive retained sessions`(
         @TempDir tmp: Path,
     ) {
-        val store = store(tmp, retentionSeconds = 3600)
+        val store = store(tmp, StoreOptions(retentionSeconds = 3600))
         val active = "11111111-1111-1111-1111-111111111111"
         val retained = "22222222-2222-2222-2222-222222222222"
         store.open(active, 1)
@@ -284,7 +290,7 @@ class TranscriptStoreTest {
         @TempDir tmp: Path,
     ) {
         val registry = SimpleMeterRegistry()
-        val store = store(tmp, telemetry = MicrometerAgentGatewayTelemetry(registry))
+        val store = store(tmp, StoreOptions(telemetry = MicrometerAgentGatewayTelemetry(registry)))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
         Files.writeString(store.activeSegmentPath(stable), "bytes", StandardOpenOption.APPEND)

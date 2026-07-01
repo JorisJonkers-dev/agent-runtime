@@ -13,6 +13,7 @@ import com.jorisjonkers.personalstack.agentgateway.tmux.AgentContinuation
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSession
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
+import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSpawnRequest
 import com.jorisjonkers.personalstack.agentgateway.web.dto.AgentResponse
 import com.jorisjonkers.personalstack.agentgateway.web.dto.ContinuationMetadata
 import com.jorisjonkers.personalstack.agentgateway.web.dto.SendInputRequest
@@ -53,12 +54,14 @@ class AgentController(
         recordRestOperation(GatewayOperationLabel.SPAWN, req.kind.toTelemetryKind()) {
             val session =
                 sessions.spawn(
-                    req.kind,
-                    req.workspacePath,
-                    req.stableSessionId,
-                    req.epoch,
-                    req.continuation?.toDomain(),
-                    req.resumeCliSessionId,
+                    AgentSpawnRequest(
+                        kind = req.kind,
+                        workspacePath = req.workspacePath,
+                        stableSessionId = req.stableSessionId,
+                        epoch = req.epoch,
+                        continuation = req.continuation?.toDomain(),
+                        resumeCliSessionId = req.resumeCliSessionId,
+                    ),
                 )
             ResponseEntity.status(HttpStatus.CREATED).body(toResponse(session))
         }
@@ -66,7 +69,7 @@ class AgentController(
     @DeleteMapping("/transcripts/{stableSessionId}")
     fun cleanupTranscript(
         @PathVariable stableSessionId: String,
-    ): ResponseEntity<Void> =
+    ): ResponseEntity<Unit> =
         recordRestOperation(GatewayOperationLabel.REPLAY) {
             val ok = sessions.cleanupTranscript(stableSessionId)
             if (ok) ResponseEntity.noContent().build() else ResponseEntity.notFound().build()
@@ -90,7 +93,7 @@ class AgentController(
     fun send(
         @PathVariable id: String,
         @RequestBody req: SendInputRequest,
-    ): ResponseEntity<Void> =
+    ): ResponseEntity<Unit> =
         recordRestOperation(GatewayOperationLabel.INPUT) {
             sessions.send(id, req.input, req.enter)
             ResponseEntity.accepted().build()
@@ -120,7 +123,7 @@ class AgentController(
     @DeleteMapping("/{id}")
     fun stop(
         @PathVariable id: String,
-    ): ResponseEntity<Void> =
+    ): ResponseEntity<Unit> =
         recordRestOperation(GatewayOperationLabel.STOP) {
             val ok = sessions.stop(id)
             if (ok) ResponseEntity.noContent().build() else ResponseEntity.notFound().build()

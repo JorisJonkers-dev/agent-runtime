@@ -14,6 +14,7 @@ import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
 import com.jorisjonkers.personalstack.agentgateway.tmux.LogTailer
 import com.jorisjonkers.personalstack.agentgateway.tmux.TranscriptStore
 import com.jorisjonkers.personalstack.agentgateway.tmux.TranscriptTailer
+import com.jorisjonkers.personalstack.agentgateway.tmux.TranscriptTailerOptions
 import io.micrometer.observation.Observation
 import io.micrometer.observation.ObservationRegistry
 import jakarta.annotation.PreDestroy
@@ -251,18 +252,22 @@ class AgentAttachHandler(
 
         val tailer =
             TranscriptTailer(
-                transcriptStore,
-                stableSessionId,
-                replayStart,
-                intervalMs = props.tmux.tailIntervalMs,
-                onTrim = { sendJson(session, mapOf("trim" to it, "cursor" to it), requireOpen = true) },
-                observationRegistry = observationRegistry,
-            ) { frame ->
-                runCatching {
-                    sendJson(session, mapOf("output" to frame.output, "off" to frame.off), requireOpen = true)
-                }.onFailure { replaySendFailure = true }
-                    .getOrThrow()
-            }
+                store = transcriptStore,
+                stableSessionId = stableSessionId,
+                startOffset = replayStart,
+                onText = { frame ->
+                    runCatching {
+                        sendJson(session, mapOf("output" to frame.output, "off" to frame.off), requireOpen = true)
+                    }.onFailure { replaySendFailure = true }
+                        .getOrThrow()
+                },
+                options =
+                    TranscriptTailerOptions(
+                        intervalMs = props.tmux.tailIntervalMs,
+                        onTrim = { sendJson(session, mapOf("trim" to it, "cursor" to it), requireOpen = true) },
+                        observationRegistry = observationRegistry,
+                    ),
+            )
         tailers[session.id] = tailer
         val replay = tailer.replayAvailable()
         val replayReason =

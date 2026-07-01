@@ -11,6 +11,7 @@ import com.jorisjonkers.personalstack.agentgateway.tmux.AgentContinuation
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSession
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
+import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSpawnRequest
 import com.jorisjonkers.personalstack.agentgateway.tmux.StagedInput
 import io.micrometer.observation.Observation
 import io.micrometer.observation.ObservationHandler
@@ -62,17 +63,20 @@ class AgentControllerTest {
     fun `POST agents spawns and returns 201 with session`() {
         every {
             sessions.spawn(
-                AgentKind.CLAUDE,
-                "/workspace/repo",
-                "11111111-1111-1111-1111-111111111111",
-                2,
-                AgentContinuation(
-                    reason = "restart",
-                    previousEpoch = 1,
-                    fromSetupLabel = "Default runner",
-                    toSetupLabel = "GPU runner",
+                AgentSpawnRequest(
+                    kind = AgentKind.CLAUDE,
+                    workspacePath = "/workspace/repo",
+                    stableSessionId = "11111111-1111-1111-1111-111111111111",
+                    epoch = 2,
+                    continuation =
+                        AgentContinuation(
+                            reason = "restart",
+                            previousEpoch = 1,
+                            fromSetupLabel = "Default runner",
+                            toSetupLabel = "GPU runner",
+                        ),
+                    resumeCliSessionId = "native-old",
                 ),
-                "native-old",
             )
         } returns sample
         mockMvc
@@ -213,7 +217,7 @@ class AgentControllerTest {
                 .setControllerAdvice(ErrorAdvice())
                 .build()
 
-        every { localSessions.spawn(AgentKind.SHELL, null, null, null, null) } returns
+        every { localSessions.spawn(AgentSpawnRequest(kind = AgentKind.SHELL)) } returns
             sample.copy(kind = AgentKind.SHELL)
         every { localSessions.send("abc12345", "hi", true) } returns Unit
         every { localSessions.cleanupTranscript("11111111-1111-1111-1111-111111111111") } returns true

@@ -28,3 +28,12 @@ data class AgentContinuation(
     val fromSetupLabel: String? = null,
     val toSetupLabel: String? = null,
 )
+
+data class AgentSpawnRequest(
+    val kind: AgentKind,
+    val workspacePath: String? = null,
+    val stableSessionId: String? = null,
+    val epoch: Long? = null,
+    val continuation: AgentContinuation? = null,
+    val resumeCliSessionId: String? = null,
+)

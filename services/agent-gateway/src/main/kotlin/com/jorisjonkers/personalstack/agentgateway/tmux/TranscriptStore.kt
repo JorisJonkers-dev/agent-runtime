@@ -16,6 +16,7 @@ import java.nio.file.StandardOpenOption
 import java.time.Clock
 import java.time.Instant
 import java.util.Comparator
+import java.util.Locale
 import java.util.Properties
 import java.util.UUID
 import kotlin.io.path.Path
@@ -375,7 +376,7 @@ class TranscriptStore
         private fun segmentPath(
             stableSessionId: String,
             index: Int,
-        ): Path = segmentsDir(stableSessionId).resolve("segment-%06d.log".format(index))
+        ): Path = segmentsDir(stableSessionId).resolve("segment-%06d.log".format(Locale.ROOT, index))
 
         private fun segmentFiles(stableSessionId: String): List<Path> {
             val dir = segmentsDir(stableSessionId)

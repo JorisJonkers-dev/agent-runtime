@@ -2,6 +2,7 @@ package com.jorisjonkers.personalstack.agentgateway.web
 
 import com.jorisjonkers.personalstack.agentgateway.headless.HeadlessJob
 import com.jorisjonkers.personalstack.agentgateway.headless.HeadlessJobManager
+import com.jorisjonkers.personalstack.agentgateway.headless.HeadlessLaunchRequest
 import com.jorisjonkers.personalstack.agentgateway.headless.HeadlessOutputStreamer
 import com.jorisjonkers.personalstack.agentgateway.web.dto.HeadlessJobResponse
 import com.jorisjonkers.personalstack.agentgateway.web.dto.HeadlessRequest
@@ -28,12 +29,14 @@ class HeadlessController(
     ): ResponseEntity<HeadlessJobResponse> {
         val job =
             jobs.launch(
-                kind = req.kind,
-                prompt = req.prompt,
-                workspacePath = req.workspacePath,
-                cliSessionId = req.cliSessionId,
-                timeoutSeconds = req.timeoutSeconds ?: HeadlessJobManager.DEFAULT_TIMEOUT_SECONDS,
-                partialMessages = req.partialMessages,
+                HeadlessLaunchRequest(
+                    kind = req.kind,
+                    prompt = req.prompt,
+                    workspacePath = req.workspacePath,
+                    cliSessionId = req.cliSessionId,
+                    timeoutSeconds = req.timeoutSeconds ?: HeadlessJobManager.DEFAULT_TIMEOUT_SECONDS,
+                    partialMessages = req.partialMessages,
+                ),
             )
         return ResponseEntity.status(HttpStatus.CREATED).body(toResponse(job, null))
     }
@@ -74,8 +77,8 @@ class HeadlessController(
     @DeleteMapping("/{id}")
     fun cancel(
         @PathVariable id: String,
-    ): ResponseEntity<Void> {
-        val response: ResponseEntity<Void> =
+    ): ResponseEntity<Unit> {
+        val response: ResponseEntity<Unit> =
             if (jobs.cancel(id)) {
                 ResponseEntity.noContent().build()
             } else {
