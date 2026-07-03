@@ -24,7 +24,7 @@ name: 'CI'
 'jobs':
   'jvm-ci':
     'name': 'JVM CI'
-    'uses': 'JorisJonkers-dev/github-workflows/.github/workflows/jvm-ci.yml@v0.8.0'
+    'uses': 'JorisJonkers-dev/github-workflows/.github/workflows/jvm-ci.yml@v0.10.2'
     'with':
       'gradle-command': './gradlew'
       'lint-gradle-args': ':services:agent-gateway:detektMain :services:agent-gateway:detektTest :services:agent-gateway:detektIntegrationTest :services:agent-gateway:ktlintCheck'
@@ -117,7 +117,7 @@ name: 'CI'
 
   'deploy-bundle':
     'name': 'Deploy Bundle'
-    'uses': 'JorisJonkers-dev/github-workflows/.github/workflows/deploy-bundle.yml@v0.8.0'
+    'uses': 'JorisJonkers-dev/github-workflows/.github/workflows/deploy-bundle.yml@v0.10.2'
     'with':
       'package-version': '0.9.0'
       'images': 'deploy/images.json'
