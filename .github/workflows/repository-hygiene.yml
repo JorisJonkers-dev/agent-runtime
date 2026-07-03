@@ -10,4 +10,4 @@ name: 'Repository Hygiene'
 
 'jobs':
   'repository-hygiene':
-    'uses': 'JorisJonkers-dev/github-workflows/.github/workflows/repository-hygiene-guard.yml@v0.8.0'
+    'uses': 'JorisJonkers-dev/github-workflows/.github/workflows/repository-hygiene-guard.yml@v0.10.2'
