@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.17.0...v0.18.0) (2026-07-10)
+
+
+### Features
+
+* onboard agent-runtime onto the deploy platform ([b2c71dc](https://github.com/JorisJonkers-dev/agent-runtime/commit/b2c71dc894c79da08c81773bad0f2dabb0870aa5))
+
 ## [0.17.0](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.16.0...v0.17.0) (2026-06-28)
 
 
