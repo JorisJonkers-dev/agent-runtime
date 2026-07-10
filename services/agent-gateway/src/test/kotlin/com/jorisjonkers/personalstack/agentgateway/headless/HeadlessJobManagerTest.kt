@@ -440,8 +440,7 @@ class HeadlessJobManagerTest {
                 .redirectErrorStream(true)
                 .also { pb ->
                     pb.environment()[KB_AUTO_MCP_DISABLED_KEY] = HeadlessJobManager.KB_AUTO_MCP_DISABLED_VALUE
-                }
-                .start()
+                }.start()
         val checkOut = check.inputStream.bufferedReader().use { it.readText() }
         check.waitFor(5, TimeUnit.SECONDS)
         assertThat(checkOut.trim()).isEqualTo("VAL=${HeadlessJobManager.KB_AUTO_MCP_DISABLED_VALUE}")
