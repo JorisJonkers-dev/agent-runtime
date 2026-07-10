@@ -1,0 +1,27 @@
+# Deploy Preview for deploy-platform service repos.
+#
+# Any PR touching platform/ gets a full render + validation and a sticky
+# "Deploy Preview" comment with the SC-11 readiness scorecard.
+name: Deploy Preview
+
+on:
+  pull_request:
+    paths:
+      - 'platform/**'
+
+permissions: {}
+
+jobs:
+  deploy-preview:
+    uses: JorisJonkers-dev/github-workflows/.github/workflows/deploy-validate.yml@4b444f9a50edf76e4aea4148d73407c34a1e43a4 # v0.12.1
+    with:
+      deploy-dir: platform
+      schema-version: 0.16.0
+      image-lock-path: platform/images.lock.json
+      context-ref: ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:64d00fe03a271dbd03a48005d0a0cc6cc5fe43df23c0e97b649c2f8b3e78b418
+      environments: production
+      comment: true
+    permissions:
+      contents: read
+      packages: read
+      pull-requests: write

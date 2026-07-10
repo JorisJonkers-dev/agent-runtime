@@ -1,0 +1,30 @@
+apiVersion: deployment.jorisjonkers.dev/v2
+kind: Deployment
+metadata:
+  name: agent-runtime
+spec:
+  schemaVersion: 0.16.0
+  namespace: agents-system
+  platform:
+    layer: apps-core
+  workloads:
+    - name: agent-gateway
+      image: agent-gateway
+      health:
+        path: /api/actuator/health/readiness
+        port: 8090
+        timeoutClass: stateless
+        mandatory: true
+      rollbackTargetRetention:
+        minimumDays: 90
+        acknowledged: true
+    - name: agents-login
+      image: agents-login
+      health:
+        path: /healthz
+        port: 8081
+        timeoutClass: stateless
+        mandatory: true
+      rollbackTargetRetention:
+        minimumDays: 90
+        acknowledged: true

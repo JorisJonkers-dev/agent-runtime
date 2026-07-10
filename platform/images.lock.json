@@ -1,0 +1,4 @@
+{
+  "agent-gateway": "ghcr.io/jorisjonkers-dev/agent-runtime/agent-gateway@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "agents-login": "ghcr.io/jorisjonkers-dev/agent-runtime/agents-login@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+}
