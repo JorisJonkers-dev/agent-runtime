@@ -43,7 +43,7 @@ class HeadlessJobManagerTest {
             props = props,
             telemetry = telemetry,
             processFactory = processFactory,
-        )
+        ).also { it.afterPropertiesSet() }
     }
 
     @Test
@@ -52,7 +52,7 @@ class HeadlessJobManagerTest {
     ) {
         val latch = CountDownLatch(1)
         val mgr =
-            manager(tmp) { _, _ ->
+            manager(tmp) { _, _, _ ->
                 latch.await(5, TimeUnit.SECONDS)
                 processOf(exitCode = 0, output = "done")
             }
@@ -70,7 +70,7 @@ class HeadlessJobManagerTest {
     fun `launch completes with COMPLETED status on zero exit`(
         @TempDir tmp: Path,
     ) {
-        val mgr = manager(tmp) { _, _ -> processOf(exitCode = 0, output = "result: ok") }
+        val mgr = manager(tmp) { _, _, _ -> processOf(exitCode = 0, output = "result: ok") }
 
         val job = mgr.launch(AgentKind.CLAUDE, "say hello")
 
@@ -91,7 +91,7 @@ class HeadlessJobManagerTest {
     fun `launch marks job FAILED on non-zero exit`(
         @TempDir tmp: Path,
     ) {
-        val mgr = manager(tmp) { _, _ -> processOf(exitCode = 1, output = "error: failed") }
+        val mgr = manager(tmp) { _, _, _ -> processOf(exitCode = 1, output = "error: failed") }
 
         val job = mgr.launch(AgentKind.CODEX, "do something")
 
@@ -113,7 +113,7 @@ class HeadlessJobManagerTest {
         val telemetry = RecordingTelemetry()
         val rawExitText = "result: ok from private run"
         val prompt = "summarize secret prompt"
-        val mgr = manager(tmp, telemetry = telemetry) { _, _ -> processOf(exitCode = 0, output = rawExitText) }
+        val mgr = manager(tmp, telemetry = telemetry) { _, _, _ -> processOf(exitCode = 0, output = rawExitText) }
 
         val job = mgr.launch(AgentKind.CLAUDE, prompt, workspacePath = tmp.resolve("workspace-a").toString())
 
@@ -168,7 +168,7 @@ class HeadlessJobManagerTest {
     ) {
         val telemetry = RecordingTelemetry()
         val rawExitText = "raw exit text with /private/workspace"
-        val mgr = manager(tmp, telemetry = telemetry) { _, _ -> processOf(exitCode = 17, output = rawExitText) }
+        val mgr = manager(tmp, telemetry = telemetry) { _, _, _ -> processOf(exitCode = 17, output = rawExitText) }
 
         val job = mgr.launch(AgentKind.CODEX, "prompt should not become a label")
 
@@ -201,11 +201,16 @@ class HeadlessJobManagerTest {
         val telemetry = RecordingTelemetry()
         val exceptionMessage = "cannot start in ${tmp.resolve("secret-workspace")}"
         val mgr =
-            manager(tmp, telemetry = telemetry) { _, _ -> throw IOException(exceptionMessage) }
+            manager(tmp, telemetry = telemetry) { _, _, _ -> throw IOException(exceptionMessage) }
 
         val job = mgr.launch(AgentKind.SHELL, "secret shell prompt")
 
         waitUntil { mgr.get(job.id)?.status == HeadlessJobStatus.FAILED }
+        waitUntil {
+            telemetry.operations.any {
+                it.operation == GatewayOperationLabel.SPAWN && it.outcome == GatewayOutcomeLabel.FAILURE
+            }
+        }
 
         assertThat(telemetry.operations)
             .anySatisfy {
@@ -231,7 +236,7 @@ class HeadlessJobManagerTest {
         @TempDir tmp: Path,
     ) {
         val telemetry = RecordingTelemetry()
-        val mgr = manager(tmp, telemetry = telemetry) { _, _ -> sleepingProcess() }
+        val mgr = manager(tmp, telemetry = telemetry) { _, _, _ -> sleepingProcess() }
 
         val job = mgr.launch(AgentKind.CLAUDE, "timeout prompt", timeoutSeconds = 0)
 
@@ -262,7 +267,7 @@ class HeadlessJobManagerTest {
         val telemetry = RecordingTelemetry()
         val started = CountDownLatch(1)
         val mgr =
-            manager(tmp, telemetry = telemetry) { _, _ ->
+            manager(tmp, telemetry = telemetry) { _, _, _ ->
                 sleepingProcess().also { started.countDown() }
             }
 
@@ -306,7 +311,7 @@ class HeadlessJobManagerTest {
         val latch = CountDownLatch(1)
         var capturedCommand: List<String>? = null
         val mgr =
-            manager(tmp) { command, _ ->
+            manager(tmp) { command, _, _ ->
                 capturedCommand = command
                 latch.countDown()
                 processOf(exitCode = 0, output = "done")
@@ -335,7 +340,7 @@ class HeadlessJobManagerTest {
     ) {
         val started = CountDownLatch(1)
         val mgr =
-            manager(tmp) { _, _ ->
+            manager(tmp) { _, _, _ ->
                 sleepingProcess().also { started.countDown() }
             }
 
@@ -355,7 +360,7 @@ class HeadlessJobManagerTest {
     fun `readOutput returns captured output after completion`(
         @TempDir tmp: Path,
     ) {
-        val mgr = manager(tmp) { _, _ -> processOf(exitCode = 0, output = "hello from claude") }
+        val mgr = manager(tmp) { _, _, _ -> processOf(exitCode = 0, output = "hello from claude") }
 
         val job = mgr.launch(AgentKind.CLAUDE, "say hello")
 
@@ -368,6 +373,176 @@ class HeadlessJobManagerTest {
         assertThat(output).contains("hello from claude")
         mgr.destroy()
     }
+
+    // region: KB_AUTO_MCP_DISABLED injection tests
+
+    @Test
+    fun `KB_AUTO_MCP_DISABLED is injected by default when enableKbHooks is false`(
+        @TempDir tmp: Path,
+    ) {
+        var capturedKbFlag: Boolean? = null
+        val latch = CountDownLatch(1)
+        val mgr =
+            manager(tmp) { _, _, enableKbHooks ->
+                capturedKbFlag = enableKbHooks
+                latch.countDown()
+                processOf(exitCode = 0, output = "done")
+            }
+
+        mgr.launch(HeadlessLaunchRequest(kind = AgentKind.CLAUDE, prompt = "test", enableKbHooks = false))
+
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue()
+        assertThat(capturedKbFlag).isFalse()
+        mgr.destroy()
+    }
+
+    @Test
+    fun `KB_AUTO_MCP_DISABLED is not injected when enableKbHooks is true`(
+        @TempDir tmp: Path,
+    ) {
+        var capturedKbFlag: Boolean? = null
+        val latch = CountDownLatch(1)
+        val mgr =
+            manager(tmp) { _, _, enableKbHooks ->
+                capturedKbFlag = enableKbHooks
+                latch.countDown()
+                processOf(exitCode = 0, output = "done")
+            }
+
+        mgr.launch(HeadlessLaunchRequest(kind = AgentKind.CLAUDE, prompt = "test", enableKbHooks = true))
+
+        assertThat(latch.await(3, TimeUnit.SECONDS)).isTrue()
+        assertThat(capturedKbFlag).isTrue()
+        mgr.destroy()
+    }
+
+    @Test
+    fun `DefaultProcessFactory injects KB_AUTO_MCP_DISABLED when enableKbHooks is false`(
+        @TempDir tmp: Path,
+    ) {
+        val process =
+            HeadlessJobManager.DefaultProcessFactory.start(
+                command = listOf("/bin/sh", "-c", "echo VAL=\$${HeadlessJobManager.KB_AUTO_MCP_DISABLED_KEY}"),
+                cwd = tmp.toFile(),
+                enableKbHooks = false,
+            )
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        process.waitFor(5, TimeUnit.SECONDS)
+
+        assertThat(output.trim()).isEqualTo("VAL=${HeadlessJobManager.KB_AUTO_MCP_DISABLED_VALUE}")
+    }
+
+    @Test
+    fun `DefaultProcessFactory leaves KB_AUTO_MCP_DISABLED unset when enableKbHooks is true`(
+        @TempDir tmp: Path,
+    ) {
+        val process =
+            HeadlessJobManager.DefaultProcessFactory.start(
+                command = listOf("/bin/sh", "-c", "echo VAL=\$${HeadlessJobManager.KB_AUTO_MCP_DISABLED_KEY}"),
+                cwd = tmp.toFile(),
+                enableKbHooks = true,
+            )
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        process.waitFor(5, TimeUnit.SECONDS)
+
+        // With hooks enabled the factory must not inject the switch; the child
+        // only sees whatever the test JVM itself inherited (usually nothing).
+        val inherited = System.getenv(HeadlessJobManager.KB_AUTO_MCP_DISABLED_KEY).orEmpty()
+        assertThat(output.trim()).isEqualTo("VAL=$inherited")
+    }
+
+    // endregion
+
+    // region: durable sidecar tests
+
+    @Test
+    fun `completed job is written to sidecar file`(
+        @TempDir tmp: Path,
+    ) {
+        val mgr = manager(tmp) { _, _, _ -> processOf(exitCode = 0, output = "output data") }
+
+        val job = mgr.launch(AgentKind.CLAUDE, "write code")
+        waitUntil { mgr.get(job.id)?.status == HeadlessJobStatus.COMPLETED }
+
+        val sidecar = tmp.resolve("headless-${job.id}.json")
+        assertThat(sidecar).exists()
+        val content = sidecar.toFile().readText()
+        assertThat(content).contains("\"id\":\"${job.id}\"")
+        assertThat(content).contains("\"status\":\"COMPLETED\"")
+        assertThat(content).contains("\"kind\":\"CLAUDE\"")
+        mgr.destroy()
+    }
+
+    @Test
+    fun `afterPropertiesSet reloads completed jobs from sidecar files`(
+        @TempDir tmp: Path,
+    ) {
+        // First manager launches and completes a job.
+        val mgr1 = manager(tmp) { _, _, _ -> processOf(exitCode = 0, output = "output") }
+        val job = mgr1.launch(AgentKind.CLAUDE, "task")
+        waitUntil { mgr1.get(job.id)?.status == HeadlessJobStatus.COMPLETED }
+        mgr1.destroy()
+
+        // Second manager (simulating a Pod restart) reloads the sidecar.
+        val mgr2 = manager(tmp) { _, _, _ -> processOf(exitCode = 0, output = "") }
+        val reloaded = mgr2.get(job.id)
+
+        assertThat(reloaded).isNotNull()
+        assertThat(reloaded!!.status).isEqualTo(HeadlessJobStatus.COMPLETED)
+        assertThat(reloaded.kind).isEqualTo(AgentKind.CLAUDE)
+        mgr2.destroy()
+    }
+
+    @Test
+    fun `afterPropertiesSet surfaces RUNNING jobs as FAILED after restart`(
+        @TempDir tmp: Path,
+    ) {
+        // Directly write a sidecar that claims a job was RUNNING when the process died.
+        val jobId = "abcd1234"
+        val outputFile = tmp.resolve("headless-$jobId.jsonl")
+        outputFile.toFile().createNewFile()
+        val sidecar = tmp.resolve("headless-$jobId.json")
+        val fakeJob =
+            HeadlessJob(
+                id = jobId,
+                kind = AgentKind.CLAUDE,
+                status = HeadlessJobStatus.RUNNING,
+                outputFile = outputFile,
+                createdAt = java.time.Instant.now(),
+            )
+        HeadlessJobSidecar.write(fakeJob, sidecar)
+
+        val mgr = manager(tmp) { _, _, _ -> processOf(exitCode = 0, output = "") }
+        val reloaded = mgr.get(jobId)
+
+        assertThat(reloaded).isNotNull()
+        assertThat(reloaded!!.status).isEqualTo(HeadlessJobStatus.FAILED)
+        mgr.destroy()
+    }
+
+    @Test
+    fun `afterPropertiesSet skips sidecar when output file is missing`(
+        @TempDir tmp: Path,
+    ) {
+        // Sidecar with no corresponding output file — should be silently ignored.
+        val jobId = "deadbeef"
+        val sidecar = tmp.resolve("headless-$jobId.json")
+        val fakeJob =
+            HeadlessJob(
+                id = jobId,
+                kind = AgentKind.CODEX,
+                status = HeadlessJobStatus.COMPLETED,
+                outputFile = tmp.resolve("headless-$jobId-missing.jsonl"),
+                createdAt = java.time.Instant.now(),
+            )
+        HeadlessJobSidecar.write(fakeJob, sidecar)
+
+        val mgr = manager(tmp) { _, _, _ -> processOf(exitCode = 0, output = "") }
+        assertThat(mgr.get(jobId)).isNull()
+        mgr.destroy()
+    }
+
+    // endregion
 
     /**
      * Build a fake [Process] that exits immediately with [exitCode] and

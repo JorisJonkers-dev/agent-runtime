@@ -13,6 +13,7 @@ import com.jorisjonkers.personalstack.agentgateway.observability.GatewayStatusLa
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.DisposableBean
+import org.springframework.beans.factory.InitializingBean
 import org.springframework.stereotype.Component
 import java.io.File
 import java.io.IOException
@@ -36,9 +37,17 @@ import java.util.concurrent.TimeUnit
  * `ConcurrentHashMap.compute` so concurrent status reads are safe.
  * Cancellation kills the OS process and marks the job CANCELLED.
  *
- * The job registry is in-memory — Pod restarts lose running jobs. The
- * caller (agents-api) should detect a missing job id and surface it
- * as a FAILED status.
+ * Durability: job metadata is persisted as a JSON sidecar file
+ * (`headless-<id>.json`) next to the output JSONL file in the state dir.
+ * On startup the manager reloads any completed sidecar files so callers
+ * can still read the final status and output of jobs that finished before
+ * the current process started. Jobs that were RUNNING at the time of a
+ * previous restart are re-surfaced as FAILED (the process died with them).
+ *
+ * KB hooks: `KB_AUTO_MCP_DISABLED=1` is injected into every headless
+ * process environment by default. Pass `enableKbHooks = true` in
+ * [HeadlessLaunchRequest] to opt a specific run back in (council workers
+ * that explicitly want KB recall/capture may do so).
  */
 @Suppress("TooManyFunctions")
 @Component
@@ -46,11 +55,54 @@ class HeadlessJobManager(
     private val props: GatewayProperties,
     private val telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
     private val processFactory: ProcessFactory = DefaultProcessFactory,
-) : DisposableBean {
+) : DisposableBean,
+    InitializingBean {
     private val log = LoggerFactory.getLogger(HeadlessJobManager::class.java)
     private val jobs = ConcurrentHashMap<String, HeadlessJob>()
     private val processes = ConcurrentHashMap<String, Process>()
     private val executor: ExecutorService = Executors.newVirtualThreadPerTaskExecutor()
+
+    /** Reload durable job state from the state directory at startup. */
+    override fun afterPropertiesSet() {
+        val stateDir = Path.of(props.tmux.stateDir)
+        if (!Files.isDirectory(stateDir)) return
+        runCatching {
+            Files.list(stateDir).use { entries ->
+                entries
+                    .filter { it.fileName.toString().matches(SIDECAR_FILE_PATTERN) }
+                    .forEach { sidecar -> reloadSidecar(sidecar) }
+            }
+        }.onFailure { ex ->
+            log.warn("headless job state reload failed: {}", ex.message)
+        }
+        log.info("headless job registry reloaded {} entries from {}", jobs.size, stateDir)
+    }
+
+    private fun reloadSidecar(sidecar: Path) {
+        runCatching {
+            val job = HeadlessJobSidecar.read(sidecar)
+            // Jobs that were RUNNING when the previous process died will never
+            // complete — surface them as FAILED so callers aren't stuck polling.
+            val recovered =
+                if (job.status == HeadlessJobStatus.RUNNING) {
+                    job.copy(status = HeadlessJobStatus.FAILED, completedAt = job.completedAt ?: Instant.now())
+                } else {
+                    job
+                }
+            // Only register if the output file still exists; orphaned sidecars
+            // whose output was cleaned up separately are silently skipped.
+            if (Files.exists(recovered.outputFile)) {
+                jobs[recovered.id] = recovered
+                // Converge the on-disk state so a RUNNING->FAILED recovery is
+                // not re-applied (with a fresh completedAt) on every restart.
+                if (recovered != job) {
+                    persistSidecar(recovered)
+                }
+            }
+        }.onFailure { ex ->
+            log.warn("headless job sidecar {} could not be reloaded: {}", sidecar.fileName, ex.message)
+        }
+    }
 
     fun launch(
         kind: AgentKind,
@@ -85,6 +137,7 @@ class HeadlessJobManager(
                 createdAt = Instant.now(),
             )
         jobs[id] = job
+        persistSidecar(job, stateDir)
         recordJobCounts()
         recordHeadlessJobEvent(
             kind = request.kind,
@@ -101,10 +154,11 @@ class HeadlessJobManager(
                     cwd = cwd,
                     outputFile = outputFile.toFile(),
                     timeoutSeconds = request.timeoutSeconds,
+                    enableKbHooks = request.enableKbHooks,
                 ),
             )
         }
-        log.info("launched headless {} job {} in {}", request.kind, id, cwd)
+        log.info("launched headless {} job {} in {} (kbHooks={})", request.kind, id, cwd, request.enableKbHooks)
         return job
     }
 
@@ -153,11 +207,16 @@ class HeadlessJobManager(
 
     override fun destroy() {
         executor.shutdownNow()
+        // Wait for interrupted job threads to finish their final state
+        // transition (which persists a sidecar file) so shutdown does not
+        // race their writes — e.g. against a temp-dir cleanup in tests or
+        // a Pod teardown removing the state dir.
+        runCatching { executor.awaitTermination(SHUTDOWN_GRACE_SECONDS, TimeUnit.SECONDS) }
     }
 
     private fun runJob(context: HeadlessRunContext) {
         val process =
-            startProcess(context.id, context.kind, context.command, context.cwd)
+            startProcess(context.id, context.kind, context.command, context.cwd, context.enableKbHooks)
                 ?: run {
                     recordCleanup(context.kind, GatewayOutcomeLabel.SKIPPED, GatewayFailureReasonLabel.UNKNOWN)
                     return
@@ -198,9 +257,10 @@ class HeadlessJobManager(
         kind: AgentKind,
         command: List<String>,
         cwd: File,
+        enableKbHooks: Boolean,
     ): Process? =
         runCatching {
-            processFactory.start(command, cwd)
+            processFactory.start(command, cwd, enableKbHooks)
         }.getOrElse { ex ->
             log.error("headless job {} failed to start: {}", id, ex.message)
             val failed = markJob(id, HeadlessJobStatus.FAILED)
@@ -279,6 +339,7 @@ class HeadlessJobManager(
                 ?.also { updated = it }
                 ?: job.also { updated = it }
         }
+        updated?.let { persistSidecar(it) }
         recordJobCounts()
         return updated
     }
@@ -291,8 +352,21 @@ class HeadlessJobManager(
         jobs.compute(id) { _, job ->
             job?.copy(status = status, completedAt = Instant.now()).also { updated = it }
         }
+        updated?.let { persistSidecar(it) }
         recordJobCounts()
         return updated
+    }
+
+    private fun persistSidecar(
+        job: HeadlessJob,
+        stateDir: Path = Path.of(props.tmux.stateDir),
+    ) {
+        runCatching {
+            val sidecar = stateDir.resolve("headless-${job.id}.json")
+            HeadlessJobSidecar.write(job, sidecar)
+        }.onFailure { ex ->
+            log.warn("headless job {} sidecar write failed: {}", job.id, ex.message)
+        }
     }
 
     private fun recordJobCounts() {
@@ -402,21 +476,32 @@ class HeadlessJobManager(
         fun start(
             command: List<String>,
             cwd: File,
+            enableKbHooks: Boolean,
         ): Process
     }
 
     companion object {
         const val DEFAULT_TIMEOUT_SECONDS = 600L
         const val MAX_OUTPUT_CHARS = 65_536
+
+        /** Environment variable that suppresses auto-KB recall/capture hooks in agent-kit. */
+        const val KB_AUTO_MCP_DISABLED_KEY = "KB_AUTO_MCP_DISABLED"
+        const val KB_AUTO_MCP_DISABLED_VALUE = "1"
+        private val SIDECAR_FILE_PATTERN = Regex("headless-[0-9a-fA-F]+\\.json")
         private const val TIMEOUT_EXIT_CODE = -1
         private const val GOBBLER_JOIN_MS = 2_000L
+        private const val SHUTDOWN_GRACE_SECONDS = 5L
 
         val DefaultProcessFactory =
-            ProcessFactory { command, cwd ->
+            ProcessFactory { command, cwd, enableKbHooks ->
                 ProcessBuilder(command)
                     .directory(cwd)
                     .redirectErrorStream(true)
-                    .start()
+                    .also { pb ->
+                        if (!enableKbHooks) {
+                            pb.environment()[KB_AUTO_MCP_DISABLED_KEY] = KB_AUTO_MCP_DISABLED_VALUE
+                        }
+                    }.start()
             }
     }
 }
@@ -428,6 +513,13 @@ data class HeadlessLaunchRequest(
     val cliSessionId: String? = null,
     val timeoutSeconds: Long = HeadlessJobManager.DEFAULT_TIMEOUT_SECONDS,
     val partialMessages: Boolean = false,
+    /**
+     * When false (the default) the process environment includes
+     * `KB_AUTO_MCP_DISABLED=1` so headless/council workers do not fire
+     * auto-KB recall or capture hooks. Set to true only for runs that
+     * explicitly need KB hook access.
+     */
+    val enableKbHooks: Boolean = false,
 )
 
 private data class HeadlessRunContext(
@@ -437,4 +529,5 @@ private data class HeadlessRunContext(
     val cwd: File,
     val outputFile: File,
     val timeoutSeconds: Long,
+    val enableKbHooks: Boolean = false,
 )
