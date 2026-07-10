@@ -124,9 +124,8 @@ internal object HeadlessJobSidecar {
         var pos = fromPos
         // skip whitespace and commas
         while (pos < body.length && (body[pos] == ',' || body[pos].isWhitespace())) pos++
-        if (pos >= body.length) return null
-        val key = readString(body, pos) ?: return null
-        return key.first to (key.second + (pos - fromPos))
+        val key = if (pos < body.length) readString(body, pos) else null
+        return key?.let { it.first to (it.second + (pos - fromPos)) }
     }
 
     private fun parseValue(
