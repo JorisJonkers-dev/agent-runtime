@@ -207,6 +207,11 @@ class HeadlessJobManager(
 
     override fun destroy() {
         executor.shutdownNow()
+        // Wait for interrupted job threads to finish their final state
+        // transition (which persists a sidecar file) so shutdown does not
+        // race their writes — e.g. against a temp-dir cleanup in tests or
+        // a Pod teardown removing the state dir.
+        runCatching { executor.awaitTermination(SHUTDOWN_GRACE_SECONDS, TimeUnit.SECONDS) }
     }
 
     private fun runJob(context: HeadlessRunContext) {
@@ -485,6 +490,7 @@ class HeadlessJobManager(
         private val SIDECAR_FILE_PATTERN = Regex("headless-[0-9a-fA-F]+\\.json")
         private const val TIMEOUT_EXIT_CODE = -1
         private const val GOBBLER_JOIN_MS = 2_000L
+        private const val SHUTDOWN_GRACE_SECONDS = 5L
 
         val DefaultProcessFactory =
             ProcessFactory { command, cwd, enableKbHooks ->
