@@ -87,6 +87,10 @@ data class HeadlessRequest(
     // Opt-in token-level streaming (Claude `--include-partial-messages`).
     // Default off so existing headless callers are unaffected.
     val partialMessages: Boolean = false,
+    // When false (the default) KB_AUTO_MCP_DISABLED=1 is injected so the
+    // headless worker does not fire auto-KB recall/capture hooks. Set to
+    // true only for runs that explicitly need KB hook access.
+    val enableKbHooks: Boolean = false,
 )
 
 data class HeadlessJobResponse(
