@@ -67,10 +67,11 @@ class HeadlessJobManager(
         val stateDir = Path.of(props.tmux.stateDir)
         if (!Files.isDirectory(stateDir)) return
         runCatching {
-            Files
-                .list(stateDir)
-                .filter { it.fileName.toString().matches(Regex("headless-[a-f0-9]+\\.json")) }
-                .forEach { sidecar -> reloadSidecar(sidecar) }
+            Files.list(stateDir).use { entries ->
+                entries
+                    .filter { it.fileName.toString().matches(SIDECAR_FILE_PATTERN) }
+                    .forEach { sidecar -> reloadSidecar(sidecar) }
+            }
         }.onFailure { ex ->
             log.warn("headless job state reload failed: {}", ex.message)
         }
@@ -92,6 +93,11 @@ class HeadlessJobManager(
             // whose output was cleaned up separately are silently skipped.
             if (Files.exists(recovered.outputFile)) {
                 jobs[recovered.id] = recovered
+                // Converge the on-disk state so a RUNNING->FAILED recovery is
+                // not re-applied (with a fresh completedAt) on every restart.
+                if (recovered != job) {
+                    persistSidecar(recovered)
+                }
             }
         }.onFailure { ex ->
             log.warn("headless job sidecar {} could not be reloaded: {}", sidecar.fileName, ex.message)
@@ -476,6 +482,7 @@ class HeadlessJobManager(
         /** Environment variable that suppresses auto-KB recall/capture hooks in agent-kit. */
         const val KB_AUTO_MCP_DISABLED_KEY = "KB_AUTO_MCP_DISABLED"
         const val KB_AUTO_MCP_DISABLED_VALUE = "1"
+        private val SIDECAR_FILE_PATTERN = Regex("headless-[0-9a-fA-F]+\\.json")
         private const val TIMEOUT_EXIT_CODE = -1
         private const val GOBBLER_JOIN_MS = 2_000L
 

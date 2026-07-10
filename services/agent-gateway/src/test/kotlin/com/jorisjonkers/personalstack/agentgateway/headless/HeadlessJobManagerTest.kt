@@ -420,30 +420,35 @@ class HeadlessJobManagerTest {
     fun `DefaultProcessFactory injects KB_AUTO_MCP_DISABLED when enableKbHooks is false`(
         @TempDir tmp: Path,
     ) {
-        // Use a real process that prints its environment so we can inspect it.
         val process =
             HeadlessJobManager.DefaultProcessFactory.start(
-                command = listOf("/bin/sh", "-c", "echo KB=${KB_AUTO_MCP_DISABLED_KEY}"),
+                command = listOf("/bin/sh", "-c", "echo VAL=\$${HeadlessJobManager.KB_AUTO_MCP_DISABLED_KEY}"),
                 cwd = tmp.toFile(),
                 enableKbHooks = false,
             )
         val output = process.inputStream.bufferedReader().use { it.readText() }
         process.waitFor(5, TimeUnit.SECONDS)
-        // The var is in the env — the echo just checks the process starts.
-        // More importantly: the process env should contain the key. We verify
-        // that via the factory contract: flag=false → key is set.
-        assertThat(output).doesNotContain("unbound variable")
-        // Also verify that default process has the var in its environment via
-        // a shell that can access it:
-        val check =
-            ProcessBuilder(listOf("/bin/sh", "-c", "echo VAL=\$$KB_AUTO_MCP_DISABLED_KEY"))
-                .redirectErrorStream(true)
-                .also { pb ->
-                    pb.environment()[KB_AUTO_MCP_DISABLED_KEY] = HeadlessJobManager.KB_AUTO_MCP_DISABLED_VALUE
-                }.start()
-        val checkOut = check.inputStream.bufferedReader().use { it.readText() }
-        check.waitFor(5, TimeUnit.SECONDS)
-        assertThat(checkOut.trim()).isEqualTo("VAL=${HeadlessJobManager.KB_AUTO_MCP_DISABLED_VALUE}")
+
+        assertThat(output.trim()).isEqualTo("VAL=${HeadlessJobManager.KB_AUTO_MCP_DISABLED_VALUE}")
+    }
+
+    @Test
+    fun `DefaultProcessFactory leaves KB_AUTO_MCP_DISABLED unset when enableKbHooks is true`(
+        @TempDir tmp: Path,
+    ) {
+        val process =
+            HeadlessJobManager.DefaultProcessFactory.start(
+                command = listOf("/bin/sh", "-c", "echo VAL=\$${HeadlessJobManager.KB_AUTO_MCP_DISABLED_KEY}"),
+                cwd = tmp.toFile(),
+                enableKbHooks = true,
+            )
+        val output = process.inputStream.bufferedReader().use { it.readText() }
+        process.waitFor(5, TimeUnit.SECONDS)
+
+        // With hooks enabled the factory must not inject the switch; the child
+        // only sees whatever the test JVM itself inherited (usually nothing).
+        val inherited = System.getenv(HeadlessJobManager.KB_AUTO_MCP_DISABLED_KEY).orEmpty()
+        assertThat(output.trim()).isEqualTo("VAL=$inherited")
     }
 
     // endregion
@@ -603,5 +608,3 @@ class HeadlessJobManagerTest {
         }
     }
 }
-
-private const val KB_AUTO_MCP_DISABLED_KEY = HeadlessJobManager.KB_AUTO_MCP_DISABLED_KEY
