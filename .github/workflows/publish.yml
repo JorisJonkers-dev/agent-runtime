@@ -1,0 +1,312 @@
+# Tag-triggered publish flow for agent-runtime.
+#
+# Three container images are published:
+#   agent-gateway (Kotlin Spring Boot, port 8090)
+#   agent-runner  (agent execution environment)
+#   agents-login  (Node worker, port 8081)
+#
+# The deploy artifact uses agent-gateway and agents-login image aliases.
+# agent-runner is published but is NOT part of the platform deploy contract
+# (runner pods are managed by the gateway operator, not deploy-artifact).
+#
+# Boundary rule (R1-2): the image lock crosses the reusable-workflow boundary
+# as an UPLOADED ARTIFACT, never as a runner-local path.
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v1.2.0)'
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  # -- 1. Build and push all container images --------------------------------
+  publish-images:
+    name: Publish ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: agent-gateway
+            dockerfile: services/agent-gateway/Dockerfile
+          - image: agent-runner
+            dockerfile: services/agent-runner/Dockerfile
+          - image: agents-login
+            dockerfile: services/agents-login/Dockerfile
+    outputs:
+      agent-gateway-digest: ${{ steps.build.outputs.digest }}
+      agents-login-digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - uses: actions/create-github-app-token@v3
+        id: package-token
+        continue-on-error: true
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: |
+            agent-kit
+            agent-runtime
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: build-and-push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/jorisjonkers-dev/agent-runtime/${{ matrix.image }}:${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          secrets: |
+            github_token=${{ secrets.GITHUB_TOKEN }}
+            github_actor=${{ github.actor }}
+            agent_kit_token=${{ steps.package-token.outputs.token || secrets.GITHUB_TOKEN }}
+            agent_kit_actor=${{ steps.package-token.outputs.app-slug && format('{0}[bot]', steps.package-token.outputs.app-slug) || github.actor }}
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            AGENT_KIT_VERSION=v1.1.0
+
+      - name: write-digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/image-digest
+          printf '%s\n' "$IMAGE_DIGEST" > "/tmp/image-digest/${{ matrix.image }}.txt"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: image-digest-${{ matrix.image }}
+          path: /tmp/image-digest/${{ matrix.image }}.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  # -- 2. Resolve the image lock for the deploy artifact --------------------
+  resolve-image-lock:
+    needs: [publish-images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      images-lock-artifact: images-lock-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-digest-*
+          path: /tmp/image-digests
+          merge-multiple: true
+
+      - name: lock-images
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          gateway_digest="$(cat /tmp/image-digests/agent-gateway.txt)"
+          login_digest="$(cat /tmp/image-digests/agents-login.txt)"
+
+          for digest in "$gateway_digest" "$login_digest"; do
+            case "$digest" in
+              sha256:*) ;;
+              *) echo "E_FLOATING_IMAGE: digest is not sha256-prefixed: $digest" >&2; exit 1 ;;
+            esac
+          done
+
+          printf '{
+            "agent-gateway": "ghcr.io/jorisjonkers-dev/agent-runtime/agent-gateway@%s",
+            "agents-login": "ghcr.io/jorisjonkers-dev/agent-runtime/agents-login@%s"
+          }\n' "$gateway_digest" "$login_digest" > platform/images.lock.json
+
+          echo "Locked agent-gateway: ${gateway_digest}"
+          echo "Locked agents-login:  ${login_digest}"
+
+      - name: verify-lock
+        run: |
+          set -euo pipefail
+          for alias in agent-gateway agents-login; do
+            ref=$(jq -r --arg a "$alias" '.[$a]' platform/images.lock.json)
+            case "$ref" in
+              *@sha256:*) echo "Digest pin verified for $alias: $ref" ;;
+              *) echo "E_FLOATING_IMAGE: $alias lock ref is not digest-pinned: $ref" >&2; exit 1 ;;
+            esac
+          done
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: images-lock-${{ github.run_id }}
+          path: platform/images.lock.json
+          retention-days: 1
+
+  # -- 3. Render and publish the deploy artifact ----------------------------
+  publish-deploy-artifact:
+    needs: [resolve-image-lock]
+    uses: JorisJonkers-dev/github-workflows/.github/workflows/deploy-artifact.yml@4b444f9a50edf76e4aea4148d73407c34a1e43a4 # v0.12.1
+    with:
+      ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      artifact-name: agent-runtime
+      artifact-version: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      schema-version: 0.16.0
+      context-ref: ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:64d00fe03a271dbd03a48005d0a0cc6cc5fe43df23c0e97b649c2f8b3e78b418
+      deploy-dir: platform
+      image-lock-artifact: ${{ needs.resolve-image-lock.outputs.images-lock-artifact }}
+      environments: production
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+
+  # -- 4. Open/refresh the homelab-deploy registry PR ------------------------
+  register-service:
+    needs: [publish-deploy-artifact]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: mint-app-token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homelab-deploy
+
+      - name: assert-token-minted
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          if [ -z "$APP_TOKEN" ]; then
+            echo "E_APP_TOKEN_MISSING: App token was not minted for register-service." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+
+      - name: build-registry-payload
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ARTIFACT_REF: ${{ needs.publish-deploy-artifact.outputs.artifact-ref }}
+          ARTIFACT_DIGEST: ${{ needs.publish-deploy-artifact.outputs.artifact-digest }}
+          SERVICE_NAME: agent-runtime
+          REPO_OWNER: ${{ github.repository_owner }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          branch="registry-update/${SERVICE_NAME}/${TAG}"
+          registry_path="registry/${SERVICE_NAME}.yaml"
+          repo="${REPO_OWNER}/homelab-deploy"
+
+          if ! gh api "repos/${repo}/git/refs/heads/${branch}" >/dev/null 2>&1; then
+            main_sha="$(gh api "repos/${repo}/git/refs/heads/main" --jq '.object.sha')"
+            gh api --method POST "repos/${repo}/git/refs" \
+              -f ref="refs/heads/${branch}" -f sha="$main_sha" >/dev/null
+          fi
+
+          current_sha=""
+          if gh api "repos/${repo}/contents/${registry_path}?ref=${branch}" > current.json 2>/dev/null; then
+            current_sha="$(jq -r '.sha' current.json)"
+            jq -r '.content' current.json | base64 -d > current.yaml
+          fi
+
+          python3 - "$SERVICE_NAME" <<'PY'
+          import os, sys, yaml
+
+          service = sys.argv[1]
+          artifact = {
+              "ref": os.environ["ARTIFACT_REF"],
+              "digest": os.environ["ARTIFACT_DIGEST"],
+              "contractPath": "artifact-contract.yaml",
+          }
+
+          if os.path.exists("current.yaml"):
+              doc = yaml.safe_load(open("current.yaml"))
+              doc["spec"]["artifact"] = artifact
+          else:
+              dep = yaml.safe_load(open("platform/deployment.yml"))
+              spec = dep.get("spec", {})
+              platform = spec.get("platform") or {}
+              layer = platform.get("layer")
+              if not layer:
+                  sys.exit("E_UNKNOWN_LAYER: deployment.yml spec.platform.layer is "
+                           "required for first registration")
+              workloads = spec.get("workloads") or []
+              health = (workloads[0].get("health") if workloads else None) or {}
+              doc = {
+                  "apiVersion": "deployment.jorisjonkers.dev/deploy-unit-registration/v1",
+                  "kind": "DeployUnitRegistration",
+                  "metadata": {
+                      "name": service,
+                      "owner": os.environ["REPO_OWNER"],
+                  },
+                  "spec": {
+                      "artifact": artifact,
+                      "namespace": spec["namespace"],
+                      "layer": layer,
+                      "sourceRepository": os.environ["SOURCE_REPOSITORY"],
+                      "environments": spec.get("environments") or ["production"],
+                      "healthClass": health.get("class")
+                                     or health.get("timeoutClass")
+                                     or "stateless",
+                      "prune": {"default": True},
+                      "allowedClusterScope": [],
+                  },
+              }
+
+          yaml.safe_dump(doc, open("registration.yaml", "w"),
+                         sort_keys=False, default_flow_style=False)
+          PY
+
+          if [ -n "$current_sha" ]; then
+            gh api --method PUT "repos/${repo}/contents/${registry_path}" \
+              -f message="chore(registry): update ${SERVICE_NAME} to ${TAG}" \
+              -f content="$(base64 -w0 registration.yaml)" \
+              -f sha="$current_sha" -f branch="$branch" >/dev/null
+          else
+            gh api --method PUT "repos/${repo}/contents/${registry_path}" \
+              -f message="chore(registry): register ${SERVICE_NAME}" \
+              -f content="$(base64 -w0 registration.yaml)" \
+              -f branch="$branch" >/dev/null
+          fi
+
+          open_prs="$(gh api "repos/${repo}/pulls?head=${REPO_OWNER}:${branch}&state=open" --jq 'length')"
+          if [ "$open_prs" -eq 0 ]; then
+            gh api --method POST "repos/${repo}/pulls" \
+              -f title="chore(registry): update ${SERVICE_NAME} to ${TAG}" \
+              -f body="Automated registry update from publish.yml. Artifact: ${ARTIFACT_REF}" \
+              -f head="$branch" -f base="main" >/dev/null
+          else
+            echo "Updated existing registry PR for branch ${branch}"
+          fi
