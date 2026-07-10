@@ -67,7 +67,8 @@ class HeadlessJobManager(
         val stateDir = Path.of(props.tmux.stateDir)
         if (!Files.isDirectory(stateDir)) return
         runCatching {
-            Files.list(stateDir)
+            Files
+                .list(stateDir)
                 .filter { it.fileName.toString().matches(Regex("headless-[a-f0-9]+\\.json")) }
                 .forEach { sidecar -> reloadSidecar(sidecar) }
         }.onFailure { ex ->

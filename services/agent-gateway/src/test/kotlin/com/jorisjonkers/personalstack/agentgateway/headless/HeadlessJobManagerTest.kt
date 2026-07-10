@@ -206,6 +206,11 @@ class HeadlessJobManagerTest {
         val job = mgr.launch(AgentKind.SHELL, "secret shell prompt")
 
         waitUntil { mgr.get(job.id)?.status == HeadlessJobStatus.FAILED }
+        waitUntil {
+            telemetry.operations.any {
+                it.operation == GatewayOperationLabel.SPAWN && it.outcome == GatewayOutcomeLabel.FAILURE
+            }
+        }
 
         assertThat(telemetry.operations)
             .anySatisfy {
@@ -433,7 +438,9 @@ class HeadlessJobManagerTest {
         val check =
             ProcessBuilder(listOf("/bin/sh", "-c", "echo VAL=\$$KB_AUTO_MCP_DISABLED_KEY"))
                 .redirectErrorStream(true)
-                .also { pb -> pb.environment()[KB_AUTO_MCP_DISABLED_KEY] = HeadlessJobManager.KB_AUTO_MCP_DISABLED_VALUE }
+                .also { pb ->
+                    pb.environment()[KB_AUTO_MCP_DISABLED_KEY] = HeadlessJobManager.KB_AUTO_MCP_DISABLED_VALUE
+                }
                 .start()
         val checkOut = check.inputStream.bufferedReader().use { it.readText() }
         check.waitFor(5, TimeUnit.SECONDS)

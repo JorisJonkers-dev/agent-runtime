@@ -26,37 +26,38 @@ internal object HeadlessJobSidecar {
         job: HeadlessJob,
         sidecar: Path,
     ) {
-        val json = buildString {
-            append('{')
-            appendStringField("id", job.id)
-            append(',')
-            appendStringField("kind", job.kind.name)
-            append(',')
-            appendStringField("status", job.status.name)
-            append(',')
-            appendStringField("outputFile", job.outputFile.toString())
-            append(',')
-            appendStringField("createdAt", job.createdAt.toString())
-            append(',')
-            if (job.completedAt != null) {
-                appendStringField("completedAt", job.completedAt.toString())
+        val json =
+            buildString {
+                append('{')
+                appendStringField("id", job.id)
                 append(',')
+                appendStringField("kind", job.kind.name)
+                append(',')
+                appendStringField("status", job.status.name)
+                append(',')
+                appendStringField("outputFile", job.outputFile.toString())
+                append(',')
+                appendStringField("createdAt", job.createdAt.toString())
+                append(',')
+                if (job.completedAt != null) {
+                    appendStringField("completedAt", job.completedAt.toString())
+                    append(',')
+                }
+                if (job.exitCode != null) {
+                    append('"')
+                    append("exitCode")
+                    append('"')
+                    append(':')
+                    append(job.exitCode)
+                } else {
+                    append('"')
+                    append("exitCode")
+                    append('"')
+                    append(':')
+                    append("null")
+                }
+                append('}')
             }
-            if (job.exitCode != null) {
-                append('"')
-                append("exitCode")
-                append('"')
-                append(':')
-                append(job.exitCode)
-            } else {
-                append('"')
-                append("exitCode")
-                append('"')
-                append(':')
-                append("null")
-            }
-            append('}')
-        }
         Files.writeString(
             sidecar,
             json,
@@ -110,26 +111,31 @@ internal object HeadlessJobSidecar {
             // skip colon
             while (pos < body.length && (body[pos] == ':' || body[pos].isWhitespace())) pos++
             // read value — either a quoted string, null, or an integer
-            val value: String?
-            val advance: Int
-            if (pos < body.length && body[pos] == '"') {
-                val str = readString(body, pos)
-                value = str?.first
-                advance = str?.second ?: 0
-            } else if (body.startsWith("null", pos)) {
-                value = null
-                advance = 4
-            } else {
-                // integer
-                val start = pos
-                while (pos < body.length && (body[pos].isDigit() || body[pos] == '-')) pos++
-                value = body.substring(start, pos)
-                advance = 0
-            }
+            val (value, advance) = parseValue(body, pos)
             result[key.first] = value
-            if (advance > 0) pos += advance
+            pos += advance
         }
         return result
+    }
+
+    private fun parseValue(
+        body: String,
+        pos: Int,
+    ): Pair<String?, Int> {
+        if (pos >= body.length) return null to 0
+        return when {
+            body[pos] == '"' -> {
+                val str = readString(body, pos)
+                str?.first to (str?.second ?: 0)
+            }
+            body.startsWith("null", pos) -> null to 4
+            else -> {
+                // integer — advance until non-digit
+                var end = pos
+                while (end < body.length && (body[end].isDigit() || body[end] == '-')) end++
+                body.substring(pos, end) to (end - pos)
+            }
+        }
     }
 
     /**
@@ -146,14 +152,8 @@ internal object HeadlessJobSidecar {
         val sb = StringBuilder()
         while (pos < text.length && text[pos] != '"') {
             if (text[pos] == '\\' && pos + 1 < text.length) {
-                when (text[pos + 1]) {
-                    '"' -> { sb.append('"'); pos += 2 }
-                    '\\' -> { sb.append('\\'); pos += 2 }
-                    'n' -> { sb.append('\n'); pos += 2 }
-                    'r' -> { sb.append('\r'); pos += 2 }
-                    't' -> { sb.append('\t'); pos += 2 }
-                    else -> { sb.append(text[pos + 1]); pos += 2 }
-                }
+                sb.append(unescape(text[pos + 1]))
+                pos += 2
             } else {
                 sb.append(text[pos])
                 pos++
@@ -162,6 +162,16 @@ internal object HeadlessJobSidecar {
         if (pos < text.length) pos++ // consume closing '"'
         return sb.toString() to (pos - start)
     }
+
+    private fun unescape(ch: Char): Char =
+        when (ch) {
+            '"' -> '"'
+            '\\' -> '\\'
+            'n' -> '\n'
+            'r' -> '\r'
+            't' -> '\t'
+            else -> ch
+        }
 }
 
 private fun StringBuilder.appendStringField(
