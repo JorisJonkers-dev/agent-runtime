@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.1](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.18.0...v0.18.1) (2026-07-10)
+
+
+### Bug Fixes
+
+* **agent-gateway:** inject KB_AUTO_MCP_DISABLED on headless launch + durable job state ([#14](https://github.com/JorisJonkers-dev/agent-runtime/issues/14)) ([c65f9b3](https://github.com/JorisJonkers-dev/agent-runtime/commit/c65f9b3d188924843bb3bef51f3e98ea8009dc01))
+
 ## [0.18.0](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.17.0...v0.18.0) (2026-07-10)
 
 
