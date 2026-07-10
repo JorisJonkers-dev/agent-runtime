@@ -22,6 +22,8 @@ import java.time.Instant
  * produces clean output.
  */
 internal object HeadlessJobSidecar {
+    private const val NULL_LITERAL = "null"
+
     fun write(
         job: HeadlessJob,
         sidecar: Path,
@@ -101,12 +103,8 @@ internal object HeadlessJobSidecar {
         // Strip outer braces
         val body = text.trim().removePrefix("{").removeSuffix("}")
         var pos = 0
-        while (pos < body.length) {
-            // skip whitespace and commas
-            while (pos < body.length && (body[pos] == ',' || body[pos].isWhitespace())) pos++
-            if (pos >= body.length) break
-            // read key
-            val key = readString(body, pos) ?: break
+        var key = nextKey(body, pos)
+        while (key != null) {
             pos += key.second
             // skip colon
             while (pos < body.length && (body[pos] == ':' || body[pos].isWhitespace())) pos++
@@ -114,8 +112,21 @@ internal object HeadlessJobSidecar {
             val (value, advance) = parseValue(body, pos)
             result[key.first] = value
             pos += advance
+            key = nextKey(body, pos)
         }
         return result
+    }
+
+    private fun nextKey(
+        body: String,
+        fromPos: Int,
+    ): Pair<String, Int>? {
+        var pos = fromPos
+        // skip whitespace and commas
+        while (pos < body.length && (body[pos] == ',' || body[pos].isWhitespace())) pos++
+        if (pos >= body.length) return null
+        val key = readString(body, pos) ?: return null
+        return key.first to (key.second + (pos - fromPos))
     }
 
     private fun parseValue(
@@ -128,7 +139,7 @@ internal object HeadlessJobSidecar {
                 val str = readString(body, pos)
                 str?.first to (str?.second ?: 0)
             }
-            body.startsWith("null", pos) -> null to 4
+            body.startsWith(NULL_LITERAL, pos) -> null to NULL_LITERAL.length
             else -> {
                 // integer — advance until non-digit
                 var end = pos
