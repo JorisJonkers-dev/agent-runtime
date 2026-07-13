@@ -1,6 +1,7 @@
 package com.jorisjonkers.personalstack.agentgateway.ws
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
+import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
 import com.jorisjonkers.personalstack.agentgateway.observability.GatewayFailureReasonLabel
 import com.jorisjonkers.personalstack.agentgateway.observability.GatewayModeLabel
 import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOutcomeLabel
