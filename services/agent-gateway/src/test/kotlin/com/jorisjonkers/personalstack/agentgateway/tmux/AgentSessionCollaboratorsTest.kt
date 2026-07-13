@@ -84,7 +84,7 @@ class AgentSessionCollaboratorsTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val lease = store.acquireLease(stable, "agent-one", 1)
         store.open(stable, 1)
-        val firstSegment = store.activeSegmentPath(stable)
+        val firstSegment = store.segmentStore.activeSegmentPath(stable)
         Files.write(firstSegment, ByteArray(16) { 'x'.code.toByte() })
         registry.put(
             session("one", AgentKind.SHELL, firstSegment).copy(
@@ -98,7 +98,7 @@ class AgentSessionCollaboratorsTest {
         AgentTranscriptMaintenance(tmux, props, store, registry, telemetry).maintain()
 
         val current = requireNotNull(registry.get("one"))
-        assertThat(current.logFile).isEqualTo(store.activeSegmentPath(stable))
+        assertThat(current.logFile).isEqualTo(store.segmentStore.activeSegmentPath(stable))
         assertThat(current.logFile).isNotEqualTo(firstSegment)
         verify { tmux.startPipeToFile("agent-one", current.logFile) }
     }

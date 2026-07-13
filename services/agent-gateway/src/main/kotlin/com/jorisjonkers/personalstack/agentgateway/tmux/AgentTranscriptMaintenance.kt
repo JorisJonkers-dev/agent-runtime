@@ -44,19 +44,19 @@ internal class AgentTranscriptMaintenance(
     ) {
         val stableSessionId = requireNotNull(session.stableSessionId)
         val beforeTrim = transcriptStore.recoverMetadata(stableSessionId).logicalStart
-        val current = renewLease(session)
+        val current = renewTranscriptLease(session)
         transcriptStore.rotateIfNeeded(stableSessionId)
-        rotatePipeIfNeeded(current, transcriptStore.activeSegmentPath(stableSessionId))
+        rotatePipeIfNeeded(current, transcriptStore.segmentStore.activeSegmentPath(stableSessionId))
         val trimmed = transcriptStore.trimIfNeeded(stableSessionId)
         if (trimmed.logicalStart > beforeTrim) {
             recordMaintenance(current, startedAt, GatewayOutcomeLabel.SUCCESS)
         }
     }
 
-    private fun renewLease(session: AgentSession): AgentSession {
+    private fun renewTranscriptLease(session: AgentSession): AgentSession {
         val current =
             session.transcriptLease
-                ?.let(transcriptStore::renewLease)
+                ?.let(transcriptStore.leaseStore::renew)
                 ?.let { session.copy(transcriptLease = it) }
                 ?: session
         if (current !== session) registry.update(current)

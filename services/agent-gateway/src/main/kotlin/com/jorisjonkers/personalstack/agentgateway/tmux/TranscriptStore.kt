@@ -24,11 +24,11 @@ class TranscriptStore private constructor(
         telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
     ) : this(TranscriptStoreContext(props, clock, telemetry))
 
-    private val leaseStore = TranscriptLeaseStore(context)
-    private val metadataStore = TranscriptMetadataStore(context)
-    private val segmentStore = TranscriptSegmentStore(context, metadataStore)
-    private val continuationStore = TranscriptContinuationStore(context, metadataStore, segmentStore)
-    private val storageStatsStore = TranscriptStorageStatsStore(context)
+    internal val leaseStore = TranscriptLeaseStore(context)
+    internal val metadataStore = TranscriptMetadataStore(context)
+    internal val segmentStore = TranscriptSegmentStore(context, metadataStore)
+    internal val continuationStore = TranscriptContinuationStore(context, metadataStore, segmentStore)
+    internal val storageStatsStore = TranscriptStorageStatsStore(context)
 
     fun validateStableSessionId(value: String): String = context.validateStableSessionId(value)
 
@@ -37,7 +37,7 @@ class TranscriptStore private constructor(
     fun open(
         stableSessionId: String,
         epoch: Long,
-    ): TranscriptMetadata = metadataStore.open(stableSessionId, epoch).also { refreshStorageStats() }
+    ): TranscriptMetadata = metadataStore.open(stableSessionId, epoch).also { storageStatsStore.refresh() }
 
     fun acquireLease(
         stableSessionId: String,
@@ -49,33 +49,19 @@ class TranscriptStore private constructor(
         leaseStore.release(lease)
     }
 
-    fun renewLease(lease: TranscriptLease): TranscriptLease? = leaseStore.renew(lease)
-
-    fun activeSegmentPath(stableSessionId: String): Path = segmentStore.activeSegmentPath(stableSessionId)
-
-    fun appendContinuationDelimiter(
-        stableSessionId: String,
-        epoch: Long,
-        continuation: AgentContinuation?,
-    ): TranscriptMetadata = continuationStore.appendDelimiter(stableSessionId, epoch, continuation)
-
     fun recoverMetadata(stableSessionId: String): TranscriptMetadata = metadataStore.recover(stableSessionId)
 
     fun rotateIfNeeded(stableSessionId: String): TranscriptMetadata =
-        segmentStore.rotateIfNeeded(stableSessionId).also { refreshStorageStats() }
+        segmentStore.rotateIfNeeded(stableSessionId).also { storageStatsStore.refresh() }
 
     fun trimIfNeeded(stableSessionId: String): TranscriptMetadata =
-        segmentStore.trimIfNeeded(stableSessionId).also { refreshStorageStats() }
+        segmentStore.trimIfNeeded(stableSessionId).also { storageStatsStore.refresh() }
 
     fun seal(stableSessionId: String): TranscriptMetadata =
-        metadataStore.seal(stableSessionId).also { refreshStorageStats() }
+        metadataStore.seal(stableSessionId).also { storageStatsStore.refresh() }
 
     fun cleanup(stableSessionId: String): Boolean =
-        metadataStore.cleanup(stableSessionId, leaseStore).also { refreshStorageStats() }
-
-    fun storageStats(): TranscriptStorageStats = storageStatsStore.current()
-
-    fun refreshStorageStats(): TranscriptStorageStats = storageStatsStore.refresh()
+        metadataStore.cleanup(stableSessionId, leaseStore).also { storageStatsStore.refresh() }
 
     fun readRaw(
         stableSessionId: String,

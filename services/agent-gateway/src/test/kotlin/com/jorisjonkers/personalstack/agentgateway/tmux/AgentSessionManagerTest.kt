@@ -99,7 +99,7 @@ class AgentSessionManagerTest {
 
         val session = mgr.spawn(AgentKind.SHELL, stableSessionId = stable)
 
-        assertThat(session.logFile).isEqualTo(store.activeSegmentPath(stable))
+        assertThat(session.logFile).isEqualTo(store.segmentStore.activeSegmentPath(stable))
         verify { store.acquireLease(stable, session.tmuxSession, 1) }
     }
 
@@ -607,7 +607,7 @@ class AgentSessionManagerTest {
         val mgr = AgentSessionManager(tmux, props, store).also(managers::add)
         try {
             val s = mgr.spawn(AgentKind.SHELL, stableSessionId = stable)
-            val firstSegment = store.activeSegmentPath(requireNotNull(s.stableSessionId))
+            val firstSegment = store.segmentStore.activeSegmentPath(requireNotNull(s.stableSessionId))
             val payload = ByteArray(96) { 'x'.code.toByte() }
             assertThat(firstSegment).isEqualTo(s.logFile)
 
@@ -622,7 +622,7 @@ class AgentSessionManagerTest {
             }
             val current = requireNotNull(mgr.get(s.id))
             val metadata = store.recoverMetadata(stable)
-            assertThat(current.logFile).isEqualTo(store.activeSegmentPath(stable))
+            assertThat(current.logFile).isEqualTo(store.segmentStore.activeSegmentPath(stable))
             assertThat(current.transcriptFile).isEqualTo(current.logFile)
             assertThat(metadata.logicalStart).isEqualTo(payload.size.toLong())
             assertThat(metadata.byteCount).isLessThanOrEqualTo(props.transcripts.capBytes)

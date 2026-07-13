@@ -19,7 +19,7 @@ class TranscriptTailerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "abcdef", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "abcdef", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val frames = mutableListOf<TranscriptTextFrame>()
 
