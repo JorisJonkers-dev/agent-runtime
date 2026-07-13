@@ -37,8 +37,7 @@ class TranscriptStore private constructor(
     fun open(
         stableSessionId: String,
         epoch: Long,
-    ): TranscriptMetadata =
-        metadataStore.open(stableSessionId, epoch).also { refreshStorageStats() }
+    ): TranscriptMetadata = metadataStore.open(stableSessionId, epoch).also { refreshStorageStats() }
 
     fun acquireLease(
         stableSessionId: String,
