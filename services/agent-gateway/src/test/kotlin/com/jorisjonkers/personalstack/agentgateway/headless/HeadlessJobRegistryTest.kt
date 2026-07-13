@@ -40,16 +40,18 @@ class HeadlessJobRegistryTest {
         val start = CountDownLatch(1)
         val executor = Executors.newFixedThreadPool(2)
 
-        val completion = executor.submit {
-            ready.countDown()
-            start.await(3, TimeUnit.SECONDS)
-            registry.updateUnlessCancelled(job.id, HeadlessJobStatus.COMPLETED, 0)
-        }
-        val cancellation = executor.submit {
-            ready.countDown()
-            start.await(3, TimeUnit.SECONDS)
-            registry.markStatus(job.id, HeadlessJobStatus.CANCELLED)
-        }
+        val completion =
+            executor.submit {
+                ready.countDown()
+                start.await(3, TimeUnit.SECONDS)
+                registry.updateUnlessCancelled(job.id, HeadlessJobStatus.COMPLETED, 0)
+            }
+        val cancellation =
+            executor.submit {
+                ready.countDown()
+                start.await(3, TimeUnit.SECONDS)
+                registry.markStatus(job.id, HeadlessJobStatus.CANCELLED)
+            }
         assertThat(ready.await(3, TimeUnit.SECONDS)).isTrue()
         start.countDown()
         executor.shutdown()
