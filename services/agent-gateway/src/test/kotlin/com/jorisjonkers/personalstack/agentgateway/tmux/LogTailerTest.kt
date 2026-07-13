@@ -124,7 +124,7 @@ class LogTailerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "abéZ", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "abéZ", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val frames = CopyOnWriteArrayList<TranscriptTextFrame>()
 
@@ -159,12 +159,16 @@ class LogTailerTest {
         ).use { tailer ->
             tailer.start()
             Files.write(
-                store.activeSegmentPath(stable),
+                store.segmentStore.activeSegmentPath(stable),
                 byteArrayOf(0xE2.toByte(), 0x94.toByte()),
                 StandardOpenOption.APPEND,
             )
             Thread.sleep(40)
-            Files.write(store.activeSegmentPath(stable), byteArrayOf(0x80.toByte(), 0x41), StandardOpenOption.APPEND)
+            Files.write(
+                store.segmentStore.activeSegmentPath(stable),
+                byteArrayOf(0x80.toByte(), 0x41),
+                StandardOpenOption.APPEND,
+            )
             await().atMost(Duration.ofSeconds(2)).until { received.joinToString("") { it.output } == "─A" }
             assertThat(received.last().off).isEqualTo(4)
         }

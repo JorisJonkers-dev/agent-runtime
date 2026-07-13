@@ -146,9 +146,9 @@ internal class AgentSessionSpawnWorkflow(
         try {
             transcriptStore.open(stableSessionId, epoch)
             if (epoch > 1 || request.continuation != null) {
-                transcriptStore.appendContinuationDelimiter(stableSessionId, epoch, request.continuation)
+                transcriptStore.continuationStore.appendDelimiter(stableSessionId, epoch, request.continuation)
             }
-            return transcriptStore.activeSegmentPath(stableSessionId).also { opened = true }
+            return transcriptStore.segmentStore.activeSegmentPath(stableSessionId).also { opened = true }
         } finally {
             if (!opened) transcriptStore.releaseLease(lease)
         }

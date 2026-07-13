@@ -108,7 +108,7 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val telemetry = RecordingTelemetry()
         val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
@@ -151,7 +151,7 @@ class AgentAttachHandlerTest {
         store.open(stable, 1)
         val total = AgentAttachHandler.MAX_COLD_REPLAY_BYTES + 10
         Files.writeString(
-            store.activeSegmentPath(stable),
+            store.segmentStore.activeSegmentPath(stable),
             "x".repeat(total.toInt()),
             StandardOpenOption.APPEND,
         )
@@ -181,7 +181,7 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "abcdef", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "abcdef", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
         val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=4&cursor=1&off=2")
@@ -207,10 +207,10 @@ class AgentAttachHandlerTest {
         val stableForOff = "22222222-2222-2222-2222-222222222222"
         val store = transcriptStore(tmp)
         store.open(stableForCursor, 1)
-        Files.writeString(store.activeSegmentPath(stableForCursor), "abcdef", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stableForCursor), "abcdef", StandardOpenOption.APPEND)
         store.recoverMetadata(stableForCursor)
         store.open(stableForOff, 1)
-        Files.writeString(store.activeSegmentPath(stableForOff), "abcdef", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stableForOff), "abcdef", StandardOpenOption.APPEND)
         store.recoverMetadata(stableForOff)
         val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
 
@@ -249,7 +249,7 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 2)
-        Files.writeString(store.activeSegmentPath(stable), "abcdef", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "abcdef", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
         val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=3")
@@ -274,11 +274,11 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp, segmentBytes = 4, capBytes = 8)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "1111", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "1111", StandardOpenOption.APPEND)
         store.rotateIfNeeded(stable)
-        Files.writeString(store.activeSegmentPath(stable), "2222", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "2222", StandardOpenOption.APPEND)
         store.rotateIfNeeded(stable)
-        Files.writeString(store.activeSegmentPath(stable), "3333", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "3333", StandardOpenOption.APPEND)
         store.trimIfNeeded(stable)
         val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
         val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=0")
@@ -306,11 +306,11 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp, segmentBytes = 4, capBytes = 8)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "1111", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "1111", StandardOpenOption.APPEND)
         store.rotateIfNeeded(stable)
-        Files.writeString(store.activeSegmentPath(stable), "2222", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "2222", StandardOpenOption.APPEND)
         store.rotateIfNeeded(stable)
-        Files.writeString(store.activeSegmentPath(stable), "3333", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "3333", StandardOpenOption.APPEND)
         store.trimIfNeeded(stable)
         val telemetry = RecordingTelemetry()
         val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
@@ -338,7 +338,7 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store)
         val ws = wsSession("abc", "?mode=RESUME&epoch=1&offset=0")
@@ -347,7 +347,7 @@ class AgentAttachHandlerTest {
         every { ws.sendMessage(capture(sent)) } returns Unit
 
         durableHandler.afterConnectionEstablished(ws)
-        Files.writeString(store.activeSegmentPath(stable), "-live", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "-live", StandardOpenOption.APPEND)
 
         await().atMost(Duration.ofSeconds(2)).until { sent.any { it.payload.contains("-live") } }
         val replayOutputIndex = sent.indexOfFirst { it.payload.contains("\"output\":\"hello\"") }
@@ -367,7 +367,7 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "abc", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "abc", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val telemetry = RecordingTelemetry()
         val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
@@ -455,7 +455,7 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val telemetry = RecordingTelemetry()
         val durableHandler = attachHandler(props.copy(workspaceRoot = tmp.toString()), store, telemetry)
@@ -490,7 +490,7 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val durableProps =
             props.copy(
@@ -505,7 +505,7 @@ class AgentAttachHandlerTest {
 
         durableHandler.afterConnectionEstablished(ws)
         durableHandler.afterConnectionClosed(ws, CloseStatus.NORMAL)
-        Files.writeString(store.activeSegmentPath(stable), "-after-close", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "-after-close", StandardOpenOption.APPEND)
         Thread.sleep(100)
 
         assertThat(sent.any { it.payload.contains("\"output\":\"hello\"") }).isTrue
@@ -519,7 +519,7 @@ class AgentAttachHandlerTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         val store = transcriptStore(tmp)
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
         store.recoverMetadata(stable)
         val durableProps =
             props.copy(
@@ -534,7 +534,7 @@ class AgentAttachHandlerTest {
 
         durableHandler.afterConnectionEstablished(ws)
         durableHandler.shutdown()
-        Files.writeString(store.activeSegmentPath(stable), "-after-shutdown", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "-after-shutdown", StandardOpenOption.APPEND)
         Thread.sleep(100)
 
         assertThat(sent.any { it.payload.contains("\"output\":\"hello\"") }).isTrue

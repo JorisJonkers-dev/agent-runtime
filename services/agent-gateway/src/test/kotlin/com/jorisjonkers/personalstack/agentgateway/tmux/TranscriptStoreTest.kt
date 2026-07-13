@@ -55,7 +55,7 @@ class TranscriptStoreTest {
         val stable = "11111111-1111-1111-1111-111111111111"
 
         store.open(stable, 1)
-        val active = store.activeSegmentPath(stable)
+        val active = store.segmentStore.activeSegmentPath(stable)
 
         assertThat(active.toString()).startsWith(tmp.resolve(".agent-transcripts").resolve(stable).toString())
         assertThat(active.fileName.toString()).isEqualTo("segment-000000.log")
@@ -68,7 +68,7 @@ class TranscriptStoreTest {
         val store = store(tmp)
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "hello", StandardOpenOption.APPEND)
 
         val recovered = store.recoverMetadata(stable)
 
@@ -83,12 +83,17 @@ class TranscriptStoreTest {
         val store = store(tmp, StoreOptions(segmentBytes = 4))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "1234", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "1234", StandardOpenOption.APPEND)
 
         val metadata = store.rotateIfNeeded(stable)
 
         assertThat(metadata.activeSegment).isEqualTo(1)
-        assertThat(store.activeSegmentPath(stable).fileName.toString()).isEqualTo("segment-000001.log")
+        assertThat(
+            store.segmentStore
+                .activeSegmentPath(stable)
+                .fileName
+                .toString(),
+        ).isEqualTo("segment-000001.log")
     }
 
     @Test
@@ -98,11 +103,11 @@ class TranscriptStoreTest {
         val store = store(tmp, StoreOptions(segmentBytes = 4, capBytes = 8))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "1111", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "1111", StandardOpenOption.APPEND)
         store.rotateIfNeeded(stable)
-        Files.writeString(store.activeSegmentPath(stable), "2222", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "2222", StandardOpenOption.APPEND)
         store.rotateIfNeeded(stable)
-        Files.writeString(store.activeSegmentPath(stable), "3333", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "3333", StandardOpenOption.APPEND)
 
         val trimmed = store.trimIfNeeded(stable)
 
@@ -141,7 +146,7 @@ class TranscriptStoreTest {
             store(tmp, StoreOptions(leaseTtlSeconds = 30, clock = firstClock))
                 .acquireLease(stable, "owner-a", 1)
 
-        val renewed = store(tmp, StoreOptions(leaseTtlSeconds = 30, clock = secondClock)).renewLease(lease)
+        val renewed = store(tmp, StoreOptions(leaseTtlSeconds = 30, clock = secondClock)).leaseStore.renew(lease)
 
         assertThat(renewed).isNotNull
         assertThat(renewed!!.token).isEqualTo(lease.token)
@@ -155,7 +160,7 @@ class TranscriptStoreTest {
         val store = store(tmp, StoreOptions(retentionSeconds = 0))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
-        val path = store.activeSegmentPath(stable)
+        val path = store.segmentStore.activeSegmentPath(stable)
         Files.writeString(path, "bytes", StandardOpenOption.APPEND)
         store.seal(stable)
 
@@ -170,11 +175,11 @@ class TranscriptStoreTest {
         val registry = SimpleMeterRegistry()
         val store = store(tmp, StoreOptions(capBytes = 123, telemetry = MicrometerAgentGatewayTelemetry(registry)))
 
-        val stats = store.refreshStorageStats()
+        val stats = store.storageStatsStore.refresh()
 
         assertThat(stats.usedBytes).isZero()
         assertThat(stats.capBytes).isEqualTo(123)
-        assertThat(store.storageStats()).isEqualTo(stats)
+        assertThat(store.storageStatsStore.current()).isEqualTo(stats)
         assertThat(registry.find("agent.gateway.storage.bytes").gauge()!!.value()).isZero()
         assertThat(registry.find("agent.gateway.storage.limit.bytes").gauge()!!.value()).isEqualTo(123.0)
     }
@@ -187,18 +192,18 @@ class TranscriptStoreTest {
         val store = store(tmp, StoreOptions(telemetry = MicrometerAgentGatewayTelemetry(registry)))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "one", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "one", StandardOpenOption.APPEND)
 
-        val first = store.refreshStorageStats()
-        Files.writeString(store.activeSegmentPath(stable), "two", StandardOpenOption.APPEND)
+        val first = store.storageStatsStore.refresh()
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "two", StandardOpenOption.APPEND)
 
-        assertThat(store.storageStats().usedBytes).isEqualTo(first.usedBytes)
+        assertThat(store.storageStatsStore.current().usedBytes).isEqualTo(first.usedBytes)
         assertThat(registry.find("agent.gateway.storage.bytes").gauge()!!.value()).isEqualTo(first.usedBytes.toDouble())
 
         val refreshed = store.trimIfNeeded(stable)
 
         assertThat(refreshed.byteCount).isEqualTo(6)
-        assertThat(store.storageStats().usedBytes).isEqualTo(6)
+        assertThat(store.storageStatsStore.current().usedBytes).isEqualTo(6)
         assertThat(registry.find("agent.gateway.storage.bytes").gauge()!!.value()).isEqualTo(6.0)
     }
 
@@ -210,12 +215,12 @@ class TranscriptStoreTest {
         val active = "11111111-1111-1111-1111-111111111111"
         val retained = "22222222-2222-2222-2222-222222222222"
         store.open(active, 1)
-        Files.writeString(store.activeSegmentPath(active), "active", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(active), "active", StandardOpenOption.APPEND)
         store.open(retained, 1)
-        Files.writeString(store.activeSegmentPath(retained), "retained", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(retained), "retained", StandardOpenOption.APPEND)
         store.seal(retained)
 
-        val stats = store.refreshStorageStats()
+        val stats = store.storageStatsStore.refresh()
 
         assertThat(stats.usedBytes).isEqualTo("activeretained".length.toLong())
     }
@@ -240,7 +245,7 @@ class TranscriptStoreTest {
         val link = segments.resolve("segment-000001.log")
         assumeTrue(runCatching { Files.createSymbolicLink(link, outside) }.isSuccess)
 
-        val stats = store.refreshStorageStats()
+        val stats = store.storageStatsStore.refresh()
 
         assertThat(stats.usedBytes).isEqualTo(2)
     }
@@ -280,7 +285,7 @@ class TranscriptStoreTest {
             StandardOpenOption.WRITE,
         )
 
-        val stats = store.refreshStorageStats()
+        val stats = store.storageStatsStore.refresh()
 
         assertThat(stats.usedBytes).isEqualTo(2)
     }
@@ -293,7 +298,7 @@ class TranscriptStoreTest {
         val store = store(tmp, StoreOptions(telemetry = MicrometerAgentGatewayTelemetry(registry)))
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 1)
-        Files.writeString(store.activeSegmentPath(stable), "bytes", StandardOpenOption.APPEND)
+        Files.writeString(store.segmentStore.activeSegmentPath(stable), "bytes", StandardOpenOption.APPEND)
 
         store.seal(stable)
 
@@ -317,10 +322,10 @@ class TranscriptStoreTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 2)
 
-        store.appendContinuationDelimiter(stable, 2, AgentContinuation(reason = "restart", previousEpoch = 1))
-        store.appendContinuationDelimiter(stable, 2, AgentContinuation(reason = "restart", previousEpoch = 1))
+        store.continuationStore.appendDelimiter(stable, 2, AgentContinuation(reason = "restart", previousEpoch = 1))
+        store.continuationStore.appendDelimiter(stable, 2, AgentContinuation(reason = "restart", previousEpoch = 1))
 
-        val text = Files.readString(store.activeSegmentPath(stable))
+        val text = Files.readString(store.segmentStore.activeSegmentPath(stable))
         assertThat(Regex("continuation epoch=2").findAll(text).toList()).hasSize(1)
         assertThat(Regex("agent restarted").findAll(text).toList()).hasSize(1)
         assertThat(text).doesNotContain("updated setup")
@@ -335,7 +340,7 @@ class TranscriptStoreTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 2)
 
-        store.appendContinuationDelimiter(
+        store.continuationStore.appendDelimiter(
             stable,
             2,
             AgentContinuation(
@@ -344,7 +349,7 @@ class TranscriptStoreTest {
             ),
         )
 
-        val text = Files.readString(store.activeSegmentPath(stable))
+        val text = Files.readString(store.segmentStore.activeSegmentPath(stable))
         assertThat(text).contains("agent restarted")
         assertThat(text).doesNotContain("setup transition")
     }
@@ -357,7 +362,7 @@ class TranscriptStoreTest {
         val stable = "11111111-1111-1111-1111-111111111111"
         store.open(stable, 2)
 
-        store.appendContinuationDelimiter(
+        store.continuationStore.appendDelimiter(
             stable,
             2,
             AgentContinuation(
@@ -367,7 +372,7 @@ class TranscriptStoreTest {
                 toSetupLabel = "GPU runner",
             ),
         )
-        store.appendContinuationDelimiter(
+        store.continuationStore.appendDelimiter(
             stable,
             2,
             AgentContinuation(
@@ -378,7 +383,7 @@ class TranscriptStoreTest {
             ),
         )
 
-        val text = Files.readString(store.activeSegmentPath(stable))
+        val text = Files.readString(store.segmentStore.activeSegmentPath(stable))
         assertThat(Regex("continuation epoch=2").findAll(text).toList()).hasSize(1)
         assertThat(text).contains("setup transition")
         assertThat(text).contains("fromSetup=\"Default runner token=[redacted]\"")
