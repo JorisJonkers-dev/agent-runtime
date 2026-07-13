@@ -31,7 +31,7 @@ internal class TranscriptMetadataStore(
                     (existing ?: TranscriptMetadata(stableSessionId = id)).copy(
                         logicalEnd = existing?.logicalStart ?: 0L,
                         activeSegment = 0,
-                )
+                    )
                 Files.createFile(context.paths.segmentPath(id, 0))
                 write(id, metadata)
                 return@synchronized metadata

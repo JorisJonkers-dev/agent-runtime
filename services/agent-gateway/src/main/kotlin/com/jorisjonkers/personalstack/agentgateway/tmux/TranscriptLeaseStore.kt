@@ -51,8 +51,9 @@ internal class TranscriptLeaseStore(
                 ?.let { current ->
                     write(
                         current.copy(
-                            expiresAtMillis = context.clock.millis() +
-                                context.props.transcripts.leaseTtlSeconds * MILLIS_PER_SECOND,
+                            expiresAtMillis =
+                                context.clock.millis() +
+                                    context.props.transcripts.leaseTtlSeconds * MILLIS_PER_SECOND,
                         ),
                     )
                 }

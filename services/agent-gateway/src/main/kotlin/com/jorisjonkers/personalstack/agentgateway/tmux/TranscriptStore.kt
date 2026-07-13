@@ -9,10 +9,9 @@ import java.time.Clock
 import java.time.Instant
 
 @Component
-class TranscriptStore
-    private constructor(
-        private val context: TranscriptStoreContext,
-    ) {
+class TranscriptStore private constructor(
+    private val context: TranscriptStoreContext,
+) {
     @Autowired
     constructor(
         props: GatewayProperties,
