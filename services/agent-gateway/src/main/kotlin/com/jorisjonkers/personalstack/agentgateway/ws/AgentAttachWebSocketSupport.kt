@@ -1,6 +1,8 @@
 package com.jorisjonkers.personalstack.agentgateway.ws
 
 import com.jorisjonkers.personalstack.agentgateway.observability.GatewayModeLabel
+import org.slf4j.LoggerFactory
+import org.springframework.web.socket.CloseStatus
 import org.springframework.web.socket.TextMessage
 import org.springframework.web.socket.WebSocketSession
 import tools.jackson.databind.ObjectMapper
@@ -25,6 +27,8 @@ internal object AgentAttachLimits {
 internal class AgentWebSocketSender(
     private val mapper: ObjectMapper,
 ) {
+    private val log = LoggerFactory.getLogger(AgentWebSocketSender::class.java)
+
     fun sendOutput(
         session: WebSocketSession,
         text: String,
@@ -44,6 +48,14 @@ internal class AgentWebSocketSender(
         }
         val msg = mapper.writeValueAsString(payload)
         synchronized(session) { session.sendMessage(TextMessage(msg)) }
+    }
+
+    fun closeServerError(
+        session: WebSocketSession,
+        reason: String,
+    ) {
+        runCatching { session.close(CloseStatus.SERVER_ERROR.withReason(reason)) }
+            .onFailure { log.warn("closing failed websocket attach failed: {}", it.message) }
     }
 }
 

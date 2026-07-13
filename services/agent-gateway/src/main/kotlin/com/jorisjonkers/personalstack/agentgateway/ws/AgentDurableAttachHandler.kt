@@ -10,7 +10,6 @@ import com.jorisjonkers.personalstack.agentgateway.tmux.TranscriptTailer
 import com.jorisjonkers.personalstack.agentgateway.tmux.TranscriptTailerOptions
 import io.micrometer.observation.ObservationRegistry
 import org.slf4j.LoggerFactory
-import org.springframework.web.socket.CloseStatus
 import org.springframework.web.socket.WebSocketSession
 import java.time.Instant
 import java.util.concurrent.ConcurrentMap
@@ -202,7 +201,7 @@ internal class AgentDurableAttachHandler(
         val outcome = if (start.success) GatewayOutcomeLabel.SUCCESS else GatewayOutcomeLabel.FAILURE
         telemetry.recordTailerStartup(context.kind, context.requestedMode, outcome, startReason)
         telemetry.recordAttachTerminal(context.kind, context.requestedMode, outcome, startReason, context.startedAt)
-        if (!start.success) closeServerError(context.session, "tailer startup failed")
+        if (!start.success) sender.closeServerError(context.session, "tailer startup failed")
     }
 
     private fun recordInvalidReplayRequest(context: DurableAttachContext) {
@@ -225,15 +224,7 @@ internal class AgentDurableAttachHandler(
             reason,
             context.startedAt,
         )
-        closeServerError(context.session, closeReason)
-    }
-
-    private fun closeServerError(
-        session: WebSocketSession,
-        reason: String,
-    ) {
-        runCatching { session.close(CloseStatus.SERVER_ERROR.withReason(reason)) }
-            .onFailure { log.warn("closing failed websocket attach failed: {}", it.message) }
+        sender.closeServerError(context.session, closeReason)
     }
 }
 
@@ -270,7 +261,9 @@ private data class DurableReplayRequest(
             val requestedOffset = AgentAttachQuery.parseOffset(context.query)
             val requestedEpoch = AgentAttachQuery.parseEpoch(context.query)
             val mode = context.query["mode"]?.uppercase()
-            val resume = canResume(requestedEpoch, requestedOffset, context.epoch, logicalStart, logicalEnd, mode)
+            val resumeRequest = DurableReplayResumeRequest(requestedEpoch, requestedOffset, mode)
+            val resumeWindow = DurableReplayResumeWindow(context.epoch, logicalStart, logicalEnd)
+            val resume = DurableReplayResumeDecision(resumeRequest, resumeWindow).canResume
             val coldStart = maxOf(logicalStart, logicalEnd - AgentAttachLimits.MAX_COLD_REPLAY_BYTES)
             return DurableReplayRequest(
                 logicalStart = logicalStart,
@@ -280,19 +273,29 @@ private data class DurableReplayRequest(
                 malformed = requestedOffset.malformed || requestedEpoch.malformed,
             )
         }
-
-        private fun canResume(
-            requestedEpoch: ParsedLong,
-            requestedOffset: ParsedLong,
-            epoch: Long,
-            logicalStart: Long,
-            logicalEnd: Long,
-            mode: String?,
-        ): Boolean =
-            (mode == "RESUME" || mode == null) &&
-                requestedEpoch.value == epoch &&
-                requestedOffset.value != null &&
-                requestedOffset.value in logicalStart..logicalEnd &&
-                logicalEnd - requestedOffset.value <= AgentAttachLimits.MAX_RESUME_REPLAY_BYTES
     }
+}
+
+private data class DurableReplayResumeRequest(
+    val requestedEpoch: ParsedLong,
+    val requestedOffset: ParsedLong,
+    val mode: String?,
+)
+
+private data class DurableReplayResumeWindow(
+    val epoch: Long,
+    val logicalStart: Long,
+    val logicalEnd: Long,
+)
+
+private data class DurableReplayResumeDecision(
+    val request: DurableReplayResumeRequest,
+    val window: DurableReplayResumeWindow,
+) {
+    val canResume: Boolean =
+        (request.mode == "RESUME" || request.mode == null) &&
+            request.requestedEpoch.value == window.epoch &&
+            request.requestedOffset.value != null &&
+            request.requestedOffset.value in window.logicalStart..window.logicalEnd &&
+            window.logicalEnd - request.requestedOffset.value <= AgentAttachLimits.MAX_RESUME_REPLAY_BYTES
 }
