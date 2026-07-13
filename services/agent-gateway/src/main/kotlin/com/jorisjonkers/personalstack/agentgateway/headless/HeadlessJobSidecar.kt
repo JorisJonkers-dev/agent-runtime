@@ -15,8 +15,8 @@ import java.time.Instant
  * reconstitute the job registry after a Pod restart.
  *
  * The format is deliberately minimal — no Jackson dependency —
- * because the only consumers are [HeadlessJobManager.afterPropertiesSet]
- * (read) and [HeadlessJobManager.persistSidecar] (write).
+ * because the only consumers are [HeadlessJobRegistry.reload]
+ * (read) and [HeadlessJobRegistry] state transitions (write).
  *
  * Field order in the serialised object is stable so diff-based tooling
  * produces clean output.

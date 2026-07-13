@@ -2,30 +2,19 @@ package com.jorisjonkers.personalstack.agentgateway.headless
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
 import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayActiveSessionsSample
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayAgentKindLabel
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayFailureReasonLabel
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayModeLabel
 import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationLabel
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationTelemetry
 import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOutcomeLabel
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayStatusLabel
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.DisposableBean
 import org.springframework.beans.factory.InitializingBean
 import org.springframework.stereotype.Component
 import java.io.File
-import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 /**
  * Async registry for one-shot (headless) agent runs. Each job launches
@@ -33,8 +22,8 @@ import java.util.concurrent.TimeUnit
  * to a JSONL capture file in the gateway state dir, and updates status
  * when the process exits or times out.
  *
- * Concurrency: one virtual thread per job; job state is updated via
- * `ConcurrentHashMap.compute` so concurrent status reads are safe.
+ * Concurrency: one virtual thread per job; job transitions are serialized
+ * by the registry so concurrent status reads are safe.
  * Cancellation kills the OS process and marks the job CANCELLED.
  *
  * Durability: job metadata is persisted as a JSON sidecar file
@@ -49,59 +38,22 @@ import java.util.concurrent.TimeUnit
  * [HeadlessLaunchRequest] to opt a specific run back in (council workers
  * that explicitly want KB recall/capture may do so).
  */
-@Suppress("TooManyFunctions")
 @Component
 class HeadlessJobManager(
     private val props: GatewayProperties,
-    private val telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
-    private val processFactory: ProcessFactory = DefaultProcessFactory,
+    telemetry: AgentGatewayTelemetry = AgentGatewayTelemetry.NOOP,
+    processFactory: ProcessFactory = DefaultProcessFactory,
 ) : DisposableBean,
     InitializingBean {
     private val log = LoggerFactory.getLogger(HeadlessJobManager::class.java)
-    private val jobs = ConcurrentHashMap<String, HeadlessJob>()
-    private val processes = ConcurrentHashMap<String, Process>()
-    private val executor: ExecutorService = Executors.newVirtualThreadPerTaskExecutor()
+    private val stateDir: Path = Path.of(props.tmux.stateDir)
+    private val jobTelemetry = HeadlessJobTelemetry(telemetry)
+    private val registry = HeadlessJobRegistry(stateDir, jobTelemetry)
+    private val lifecycle = HeadlessProcessLifecycle(registry, jobTelemetry, processFactory)
 
     /** Reload durable job state from the state directory at startup. */
     override fun afterPropertiesSet() {
-        val stateDir = Path.of(props.tmux.stateDir)
-        if (!Files.isDirectory(stateDir)) return
-        runCatching {
-            Files.list(stateDir).use { entries ->
-                entries
-                    .filter { it.fileName.toString().matches(SIDECAR_FILE_PATTERN) }
-                    .forEach { sidecar -> reloadSidecar(sidecar) }
-            }
-        }.onFailure { ex ->
-            log.warn("headless job state reload failed: {}", ex.message)
-        }
-        log.info("headless job registry reloaded {} entries from {}", jobs.size, stateDir)
-    }
-
-    private fun reloadSidecar(sidecar: Path) {
-        runCatching {
-            val job = HeadlessJobSidecar.read(sidecar)
-            // Jobs that were RUNNING when the previous process died will never
-            // complete — surface them as FAILED so callers aren't stuck polling.
-            val recovered =
-                if (job.status == HeadlessJobStatus.RUNNING) {
-                    job.copy(status = HeadlessJobStatus.FAILED, completedAt = job.completedAt ?: Instant.now())
-                } else {
-                    job
-                }
-            // Only register if the output file still exists; orphaned sidecars
-            // whose output was cleaned up separately are silently skipped.
-            if (Files.exists(recovered.outputFile)) {
-                jobs[recovered.id] = recovered
-                // Converge the on-disk state so a RUNNING->FAILED recovery is
-                // not re-applied (with a fresh completedAt) on every restart.
-                if (recovered != job) {
-                    persistSidecar(recovered)
-                }
-            }
-        }.onFailure { ex ->
-            log.warn("headless job sidecar {} could not be reloaded: {}", sidecar.fileName, ex.message)
-        }
+        registry.reload()
     }
 
     fun launch(
@@ -124,315 +76,54 @@ class HeadlessJobManager(
     fun launch(request: HeadlessLaunchRequest): HeadlessJob {
         val id = UUID.randomUUID().toString().substring(0, 8)
         val cwd = File(request.workspacePath ?: props.workspaceRoot)
-        val stateDir = Path.of(props.tmux.stateDir).also { Files.createDirectories(it) }
+        Files.createDirectories(stateDir)
         val outputFile = stateDir.resolve("headless-$id.jsonl")
         Files.createFile(outputFile)
         val command = headlessCommandFor(request.kind, request.prompt, request.cliSessionId, request.partialMessages)
-        val job =
+        val job = registry.register(
             HeadlessJob(
                 id = id,
                 kind = request.kind,
                 status = HeadlessJobStatus.RUNNING,
                 outputFile = outputFile,
                 createdAt = Instant.now(),
-            )
-        jobs[id] = job
-        persistSidecar(job, stateDir)
-        recordJobCounts()
-        recordHeadlessJobEvent(
+            ),
+        )
+        jobTelemetry.recordEvent(
             kind = request.kind,
             operation = GatewayOperationLabel.SPAWN,
             outcome = GatewayOutcomeLabel.SUCCESS,
             duration = Duration.between(job.createdAt, Instant.now()),
         )
-        executor.submit {
-            runJob(
-                HeadlessRunContext(
-                    id = id,
-                    kind = request.kind,
-                    command = command,
-                    cwd = cwd,
-                    outputFile = outputFile.toFile(),
-                    timeoutSeconds = request.timeoutSeconds,
-                    enableKbHooks = request.enableKbHooks,
-                ),
-            )
-        }
+        lifecycle.submit(
+            HeadlessRunContext(
+                id = id,
+                kind = request.kind,
+                command = command,
+                cwd = cwd,
+                outputFile = outputFile.toFile(),
+                timeoutSeconds = request.timeoutSeconds,
+                enableKbHooks = request.enableKbHooks,
+            ),
+        )
         log.info("launched headless {} job {} in {} (kbHooks={})", request.kind, id, cwd, request.enableKbHooks)
         return job
     }
 
-    fun get(id: String): HeadlessJob? = jobs[id]
+    fun get(id: String): HeadlessJob? = registry.get(id)
 
-    fun list(): List<HeadlessJob> = jobs.values.sortedBy { it.createdAt }
+    fun list(): List<HeadlessJob> = registry.list()
 
-    fun cancel(id: String): Boolean {
-        val process =
-            processes.remove(id)
-                ?: return jobs[id]?.let { job ->
-                    recordHeadlessJobEvent(
-                        kind = job.kind,
-                        operation = GatewayOperationLabel.STOP,
-                        outcome = GatewayOutcomeLabel.SKIPPED,
-                        duration = Duration.ZERO,
-                    )
-                    true
-                } ?: false
-        process.destroyForcibly()
-        val cancelled = markJob(id, HeadlessJobStatus.CANCELLED)
-        cancelled?.let {
-            recordHeadlessJobEvent(
-                kind = it.kind,
-                operation = GatewayOperationLabel.STOP,
-                outcome = GatewayOutcomeLabel.CANCELLED,
-                reason = GatewayFailureReasonLabel.CANCELLED,
-                duration = jobDuration(it),
-            )
-        }
-        log.info("cancelled headless job {}", id)
-        return true
-    }
+    fun cancel(id: String): Boolean = lifecycle.cancel(id)
 
     fun readOutput(
         id: String,
         maxChars: Int = MAX_OUTPUT_CHARS,
-    ): String {
-        val job = jobs[id] ?: return ""
-        return runCatching {
-            val bytes = Files.readAllBytes(job.outputFile)
-            val text = String(bytes, Charsets.UTF_8)
-            if (text.length <= maxChars) text else "…" + text.takeLast(maxChars)
-        }.getOrDefault("")
-    }
+    ): String = registry.readOutput(id, maxChars)
 
     override fun destroy() {
-        executor.shutdownNow()
-        // Wait for interrupted job threads to finish their final state
-        // transition (which persists a sidecar file) so shutdown does not
-        // race their writes — e.g. against a temp-dir cleanup in tests or
-        // a Pod teardown removing the state dir.
-        runCatching { executor.awaitTermination(SHUTDOWN_GRACE_SECONDS, TimeUnit.SECONDS) }
+        lifecycle.destroy()
     }
-
-    private fun runJob(context: HeadlessRunContext) {
-        val process =
-            startProcess(context.id, context.kind, context.command, context.cwd, context.enableKbHooks)
-                ?: run {
-                    recordCleanup(context.kind, GatewayOutcomeLabel.SKIPPED, GatewayFailureReasonLabel.UNKNOWN)
-                    return
-                }
-        processes[context.id] = process
-        try {
-            awaitAndCapture(context.id, process, context.outputFile, context.timeoutSeconds)
-        } catch (ex: InterruptedException) {
-            process.destroyForcibly()
-            val cancelled = markJob(context.id, HeadlessJobStatus.CANCELLED)
-            cancelled?.let {
-                recordHeadlessJobEvent(
-                    kind = it.kind,
-                    operation = GatewayOperationLabel.HEADLESS_JOB,
-                    outcome = GatewayOutcomeLabel.CANCELLED,
-                    reason = GatewayFailureReasonLabel.CANCELLED,
-                    duration = jobDuration(it),
-                )
-            }
-        } finally {
-            val removed = processes.remove(context.id)
-            val reason =
-                if (jobs[context.id]?.status == HeadlessJobStatus.CANCELLED) {
-                    GatewayFailureReasonLabel.CANCELLED
-                } else {
-                    GatewayFailureReasonLabel.NONE
-                }
-            recordCleanup(
-                kind = context.kind,
-                outcome = if (removed == null) GatewayOutcomeLabel.SKIPPED else GatewayOutcomeLabel.SUCCESS,
-                reason = reason,
-            )
-        }
-    }
-
-    private fun startProcess(
-        id: String,
-        kind: AgentKind,
-        command: List<String>,
-        cwd: File,
-        enableKbHooks: Boolean,
-    ): Process? =
-        runCatching {
-            processFactory.start(command, cwd, enableKbHooks)
-        }.getOrElse { ex ->
-            log.error("headless job {} failed to start: {}", id, ex.message)
-            val failed = markJob(id, HeadlessJobStatus.FAILED)
-            failed?.let {
-                recordHeadlessJobEvent(
-                    kind = kind,
-                    operation = GatewayOperationLabel.SPAWN,
-                    outcome = GatewayOutcomeLabel.FAILURE,
-                    reason = startFailureReason(ex),
-                    duration = jobDuration(it),
-                )
-            }
-            null
-        }
-
-    private fun awaitAndCapture(
-        id: String,
-        process: Process,
-        outputFile: File,
-        timeoutSeconds: Long,
-    ) {
-        // Async gobbler keeps the pipe drained so waitFor never hangs on a full buffer.
-        val gobbler = Thread.ofVirtual().start { process.inputStream.copyTo(outputFile.outputStream()) }
-        val finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
-        gobbler.join(GOBBLER_JOIN_MS)
-        if (!finished) {
-            process.destroyForcibly()
-            val failed = updateJob(id, HeadlessJobStatus.FAILED, TIMEOUT_EXIT_CODE)
-            failed?.takeUnless { it.status == HeadlessJobStatus.CANCELLED }?.let {
-                recordHeadlessJobEvent(
-                    kind = it.kind,
-                    operation = GatewayOperationLabel.HEADLESS_JOB,
-                    outcome = GatewayOutcomeLabel.FAILURE,
-                    reason = GatewayFailureReasonLabel.TIMEOUT,
-                    duration = jobDuration(it),
-                )
-            }
-            log.warn("headless job {} timed out after {}s", id, timeoutSeconds)
-        } else {
-            val exitCode = process.exitValue()
-            val status = if (exitCode == 0) HeadlessJobStatus.COMPLETED else HeadlessJobStatus.FAILED
-            val updated = updateJob(id, status, exitCode)
-            updated?.takeUnless { it.status == HeadlessJobStatus.CANCELLED }?.let {
-                recordHeadlessJobEvent(
-                    kind = it.kind,
-                    operation = GatewayOperationLabel.HEADLESS_JOB,
-                    outcome =
-                        if (status == HeadlessJobStatus.COMPLETED) {
-                            GatewayOutcomeLabel.SUCCESS
-                        } else {
-                            GatewayOutcomeLabel.FAILURE
-                        },
-                    reason =
-                        if (status == HeadlessJobStatus.COMPLETED) {
-                            GatewayFailureReasonLabel.NONE
-                        } else {
-                            GatewayFailureReasonLabel.PROCESS_EXITED
-                        },
-                    duration = jobDuration(it),
-                )
-            }
-            log.info("headless job {} finished status={} exitCode={}", id, status, exitCode)
-        }
-    }
-
-    private fun updateJob(
-        id: String,
-        status: HeadlessJobStatus,
-        exitCode: Int,
-    ): HeadlessJob? {
-        var updated: HeadlessJob? = null
-        jobs.compute(id) { _, job ->
-            job
-                ?.takeUnless { it.status == HeadlessJobStatus.CANCELLED }
-                ?.copy(status = status, exitCode = exitCode, completedAt = Instant.now())
-                ?.also { updated = it }
-                ?: job.also { updated = it }
-        }
-        updated?.let { persistSidecar(it) }
-        recordJobCounts()
-        return updated
-    }
-
-    private fun markJob(
-        id: String,
-        status: HeadlessJobStatus,
-    ): HeadlessJob? {
-        var updated: HeadlessJob? = null
-        jobs.compute(id) { _, job ->
-            job?.copy(status = status, completedAt = Instant.now()).also { updated = it }
-        }
-        updated?.let { persistSidecar(it) }
-        recordJobCounts()
-        return updated
-    }
-
-    private fun persistSidecar(
-        job: HeadlessJob,
-        stateDir: Path = Path.of(props.tmux.stateDir),
-    ) {
-        runCatching {
-            val sidecar = stateDir.resolve("headless-${job.id}.json")
-            HeadlessJobSidecar.write(job, sidecar)
-        }.onFailure { ex ->
-            log.warn("headless job {} sidecar write failed: {}", job.id, ex.message)
-        }
-    }
-
-    private fun recordJobCounts() {
-        val counts = jobs.values.groupingBy { it.kind to it.status }.eachCount()
-        AgentKind.values().forEach { kind ->
-            HeadlessJobStatus.values().forEach { status ->
-                telemetry.recordActiveSessions(
-                    GatewayActiveSessionsSample(
-                        status = status.toTelemetryStatus(),
-                        kind = kind.toTelemetryKind(),
-                        mode = GatewayModeLabel.HEADLESS,
-                        count = counts[kind to status]?.toLong() ?: 0,
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun recordHeadlessJobEvent(
-        kind: AgentKind,
-        operation: GatewayOperationLabel,
-        outcome: GatewayOutcomeLabel,
-        reason: GatewayFailureReasonLabel = GatewayFailureReasonLabel.NONE,
-        duration: Duration,
-    ) {
-        telemetry.recordOperation(
-            GatewayOperationTelemetry(
-                operation = operation,
-                kind = kind.toTelemetryKind(),
-                mode = GatewayModeLabel.HEADLESS,
-                outcome = outcome,
-                reason = reason,
-                duration = duration,
-            ),
-        )
-    }
-
-    private fun recordCleanup(
-        kind: AgentKind,
-        outcome: GatewayOutcomeLabel,
-        reason: GatewayFailureReasonLabel,
-    ) {
-        recordHeadlessJobEvent(
-            kind = kind,
-            operation = GatewayOperationLabel.STOP,
-            outcome = outcome,
-            reason = reason,
-            duration = Duration.ZERO,
-        )
-    }
-
-    private fun jobDuration(job: HeadlessJob): Duration {
-        val completedAt = job.completedAt ?: Instant.now()
-        return Duration.between(job.createdAt, completedAt)
-    }
-
-    private fun startFailureReason(ex: Throwable): GatewayFailureReasonLabel =
-        when (ex) {
-            is IOException -> GatewayFailureReasonLabel.IO_ERROR
-            is SecurityException -> GatewayFailureReasonLabel.PERMISSION_DENIED
-            else -> GatewayFailureReasonLabel.UNKNOWN
-        }
-
-    private fun AgentKind.toTelemetryKind(): GatewayAgentKindLabel = GatewayAgentKindLabel.fromRaw(name)
-
-    private fun HeadlessJobStatus.toTelemetryStatus(): GatewayStatusLabel = GatewayStatusLabel.fromRaw(name)
 
     /**
      * Build the one-shot CLI command for a headless run. Claude uses
@@ -487,11 +178,6 @@ class HeadlessJobManager(
         /** Environment variable that suppresses auto-KB recall/capture hooks in agent-kit. */
         const val KB_AUTO_MCP_DISABLED_KEY = "KB_AUTO_MCP_DISABLED"
         const val KB_AUTO_MCP_DISABLED_VALUE = "1"
-        private val SIDECAR_FILE_PATTERN = Regex("headless-[0-9a-fA-F]+\\.json")
-        private const val TIMEOUT_EXIT_CODE = -1
-        private const val GOBBLER_JOIN_MS = 2_000L
-        private const val SHUTDOWN_GRACE_SECONDS = 5L
-
         val DefaultProcessFactory =
             ProcessFactory { command, cwd, enableKbHooks ->
                 ProcessBuilder(command)
@@ -519,15 +205,5 @@ data class HeadlessLaunchRequest(
      * auto-KB recall or capture hooks. Set to true only for runs that
      * explicitly need KB hook access.
      */
-    val enableKbHooks: Boolean = false,
-)
-
-private data class HeadlessRunContext(
-    val id: String,
-    val kind: AgentKind,
-    val command: List<String>,
-    val cwd: File,
-    val outputFile: File,
-    val timeoutSeconds: Long,
     val enableKbHooks: Boolean = false,
 )
