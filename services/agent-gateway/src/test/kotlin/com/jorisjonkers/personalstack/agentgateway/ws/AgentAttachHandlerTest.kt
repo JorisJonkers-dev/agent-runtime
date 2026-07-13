@@ -2,14 +2,9 @@ package com.jorisjonkers.personalstack.agentgateway.ws
 
 import com.jorisjonkers.personalstack.agentgateway.config.GatewayProperties
 import com.jorisjonkers.personalstack.agentgateway.observability.AgentGatewayTelemetry
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayActiveSessionsSample
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayAttachTelemetry
 import com.jorisjonkers.personalstack.agentgateway.observability.GatewayFailureReasonLabel
 import com.jorisjonkers.personalstack.agentgateway.observability.GatewayModeLabel
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOperationTelemetry
 import com.jorisjonkers.personalstack.agentgateway.observability.GatewayOutcomeLabel
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayReplayTelemetry
-import com.jorisjonkers.personalstack.agentgateway.observability.GatewayStorageTelemetrySample
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentKind
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSession
 import com.jorisjonkers.personalstack.agentgateway.tmux.AgentSessionManager
@@ -576,40 +571,6 @@ class AgentAttachHandlerTest {
         handler.handleMessage(ws, TextMessage("not json at all"))
         verify(exactly = 0) { sessions.resize(any(), any(), any()) }
         verify(exactly = 0) { sessions.send(any(), any(), any()) }
-    }
-
-    private class RecordingTelemetry : AgentGatewayTelemetry {
-        val attachAttempts = CopyOnWriteArrayList<GatewayAttachTelemetry>()
-        val attachFailures = CopyOnWriteArrayList<GatewayAttachTelemetry>()
-        val replayEvents = CopyOnWriteArrayList<GatewayReplayTelemetry>()
-        val replayFailures = CopyOnWriteArrayList<GatewayReplayTelemetry>()
-        val operations = CopyOnWriteArrayList<GatewayOperationTelemetry>()
-
-        override fun recordActiveSessions(sample: GatewayActiveSessionsSample) = Unit
-
-        override fun recordOperation(event: GatewayOperationTelemetry) {
-            operations += event
-        }
-
-        override fun recordAttachAttempt(event: GatewayAttachTelemetry) {
-            attachAttempts += event
-        }
-
-        override fun recordAttachFailure(event: GatewayAttachTelemetry) {
-            attachFailures += event
-        }
-
-        override fun recordReplay(event: GatewayReplayTelemetry) {
-            replayEvents += event
-        }
-
-        override fun recordReplayFailure(event: GatewayReplayTelemetry) {
-            replayFailures += event
-        }
-
-        override fun recordStorage(sample: GatewayStorageTelemetrySample) = Unit
-
-        override fun recordStorageLimit(sample: GatewayStorageTelemetrySample) = Unit
     }
 
     private fun transcriptStore(
