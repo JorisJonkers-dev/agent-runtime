@@ -137,6 +137,7 @@ internal class AgentSessionControls(
         const val ID_PREVIEW_CHARS = 8
         const val MAX_STAGED_INPUT_NAME_CHARS = 80
         val SAFE_NAME_CHARS = Regex("[^A-Za-z0-9._-]+")
-        val STAGED_INPUT_TIMESTAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS").withZone(ZoneOffset.UTC)
+        val STAGED_INPUT_TIMESTAMP: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS").withZone(ZoneOffset.UTC)
     }
 }

@@ -101,7 +101,26 @@ internal class AgentSessionSpawnWorkflow(
                 codexHome = codexHome,
             )
         startTmux(tmuxSession, launch, logFile, lease)
-        val session = sessionFrom(id, request, tmuxSession, launch, logFile, lease, stableSessionId, epoch, codexHome)
+        val session =
+            sessionFrom(
+                SpawnedSessionContext(
+                    identity =
+                        SpawnedSessionIdentity(
+                            id = id,
+                            stableSessionId = stableSessionId,
+                            epoch = epoch,
+                        ),
+                    request = request,
+                    tmuxSession = tmuxSession,
+                    launch = launch,
+                    resources =
+                        SpawnedSessionResources(
+                            logFile = logFile,
+                            lease = lease,
+                            codexHome = codexHome,
+                        ),
+                ),
+            )
         registry.put(session)
         telemetry.recordActiveSessionCounts()
         log.info(
@@ -151,35 +170,51 @@ internal class AgentSessionSpawnWorkflow(
         }
     }
 
-    private fun sessionFrom(
-        id: String,
-        request: AgentSpawnRequest,
-        tmuxSession: String,
-        launch: AgentCommand,
-        logFile: Path,
-        lease: TranscriptLease,
-        stableSessionId: String,
-        epoch: Long,
-        codexHome: Path?,
-    ): AgentSession {
+    private fun sessionFrom(context: SpawnedSessionContext): AgentSession {
+        val request = context.request
+        val launch = context.launch
+        val identity = context.identity
+        val resources = context.resources
         val cliSessionId =
             launch.cliSessionId
-                ?: codexHome?.takeIf { request.kind == AgentKind.CODEX }?.let(codexHomes::captureSessionId)
+                ?: resources.codexHome
+                    ?.takeIf { request.kind == AgentKind.CODEX }
+                    ?.let(codexHomes::captureSessionId)
         return AgentSession(
-            id = id,
+            id = identity.id,
             kind = request.kind,
-            tmuxSession = tmuxSession,
-            logFile = logFile,
+            tmuxSession = context.tmuxSession,
+            logFile = resources.logFile,
             cwd = launch.cwd,
             createdAt = Instant.now(),
             cliSessionId = cliSessionId,
-            stableSessionId = stableSessionId,
-            epoch = epoch,
+            stableSessionId = identity.stableSessionId,
+            epoch = identity.epoch,
             continuation = request.continuation,
-            transcriptFile = logFile,
-            transcriptLease = lease,
+            transcriptFile = resources.logFile,
+            transcriptLease = resources.lease,
         )
     }
+
+    private data class SpawnedSessionContext(
+        val identity: SpawnedSessionIdentity,
+        val request: AgentSpawnRequest,
+        val tmuxSession: String,
+        val launch: AgentCommand,
+        val resources: SpawnedSessionResources,
+    )
+
+    private data class SpawnedSessionIdentity(
+        val id: String,
+        val stableSessionId: String,
+        val epoch: Long,
+    )
+
+    private data class SpawnedSessionResources(
+        val logFile: Path,
+        val lease: TranscriptLease,
+        val codexHome: Path?,
+    )
 
     private companion object {
         const val ID_PREVIEW_CHARS = 8

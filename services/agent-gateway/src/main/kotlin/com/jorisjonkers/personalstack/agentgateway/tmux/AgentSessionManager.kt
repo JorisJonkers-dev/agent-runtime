@@ -34,12 +34,17 @@ class AgentSessionManager private constructor(
         claudeTranscriptLocator: ClaudeTranscriptLocator = ClaudeTranscriptLocator.fromEnvironment(),
     ) : this(
         AgentSessionComponents.create(
-            tmux = tmux,
-            props = props,
-            transcriptStore = transcriptStore,
-            telemetry = telemetry,
-            observationRegistry = observationRegistry,
-            claudeTranscriptLocator = claudeTranscriptLocator,
+            AgentSessionComponentDependencies(
+                tmux = tmux,
+                props = props,
+                transcriptStore = transcriptStore,
+                telemetry =
+                    AgentTelemetryDependencies(
+                        gateway = telemetry,
+                        observationRegistry = observationRegistry,
+                    ),
+                claudeTranscriptLocator = claudeTranscriptLocator,
+            ),
         ),
     )
 
@@ -81,34 +86,64 @@ private data class AgentSessionComponents(
     val maintenance: AgentTranscriptMaintenance,
 ) {
     companion object {
-        fun create(
-            tmux: TmuxClient,
-            props: GatewayProperties,
-            transcriptStore: TranscriptStore,
-            telemetry: AgentGatewayTelemetry,
-            observationRegistry: ObservationRegistry,
-            claudeTranscriptLocator: ClaudeTranscriptLocator,
-        ): AgentSessionComponents {
+        fun create(dependencies: AgentSessionComponentDependencies): AgentSessionComponents {
             val registry = AgentSessionRegistry()
-            val sessionTelemetry = AgentSessionTelemetry(registry, telemetry, observationRegistry)
+            val sessionTelemetry =
+                AgentSessionTelemetry(
+                    registry,
+                    dependencies.telemetry.gateway,
+                    dependencies.telemetry.observationRegistry,
+                )
             return AgentSessionComponents(
-                props = props,
+                props = dependencies.props,
                 registry = registry,
                 telemetry = sessionTelemetry,
                 spawn =
                     AgentSessionSpawnWorkflow(
-                        tmux = tmux,
-                        props = props,
-                        transcriptStore = transcriptStore,
+                        tmux = dependencies.tmux,
+                        props = dependencies.props,
+                        transcriptStore = dependencies.transcriptStore,
                         registry = registry,
                         telemetry = sessionTelemetry,
-                        claudeTranscriptLocator = claudeTranscriptLocator,
+                        claudeTranscriptLocator = dependencies.claudeTranscriptLocator,
                     ),
-                lifecycle = AgentSessionLifecycle(tmux, transcriptStore, registry, sessionTelemetry),
-                controls = AgentSessionControls(tmux, props, registry, sessionTelemetry),
-                transcripts = AgentTranscriptAdmin(transcriptStore, sessionTelemetry),
-                maintenance = AgentTranscriptMaintenance(tmux, props, transcriptStore, registry, sessionTelemetry),
+                lifecycle =
+                    AgentSessionLifecycle(
+                        dependencies.tmux,
+                        dependencies.transcriptStore,
+                        registry,
+                        sessionTelemetry,
+                    ),
+                controls =
+                    AgentSessionControls(
+                        dependencies.tmux,
+                        dependencies.props,
+                        registry,
+                        sessionTelemetry,
+                    ),
+                transcripts = AgentTranscriptAdmin(dependencies.transcriptStore, sessionTelemetry),
+                maintenance =
+                    AgentTranscriptMaintenance(
+                        dependencies.tmux,
+                        dependencies.props,
+                        dependencies.transcriptStore,
+                        registry,
+                        sessionTelemetry,
+                    ),
             )
         }
     }
 }
+
+private data class AgentSessionComponentDependencies(
+    val tmux: TmuxClient,
+    val props: GatewayProperties,
+    val transcriptStore: TranscriptStore,
+    val telemetry: AgentTelemetryDependencies,
+    val claudeTranscriptLocator: ClaudeTranscriptLocator,
+)
+
+private data class AgentTelemetryDependencies(
+    val gateway: AgentGatewayTelemetry,
+    val observationRegistry: ObservationRegistry,
+)
