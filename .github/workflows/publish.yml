@@ -88,7 +88,7 @@ jobs:
             agent_kit_actor=${{ steps.package-token.outputs.app-slug && format('{0}[bot]', steps.package-token.outputs.app-slug) || github.actor }}
           build-args: |
             GIT_SHA=${{ github.sha }}
-            AGENT_KIT_VERSION=v1.1.0
+            AGENT_KIT_VERSION=v3.3.0
 
       - name: write-digest
         env:
