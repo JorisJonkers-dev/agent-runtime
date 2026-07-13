@@ -42,10 +42,10 @@ RUN apk add --no-cache curl && \
 
 FROM debian:bookworm-slim
 ARG GIT_SHA=unknown
-ARG AGENT_KIT_RUNTIME_REF=ghcr.io/jorisjonkers-dev/agent-kit/runtime-home:v1.1.0
+ARG AGENT_KIT_RUNTIME_REF=ghcr.io/jorisjonkers-dev/agent-kit/runtime-home:v3.3.0
 ARG AGENT_KIT_RUNTIME_DIGEST
 ARG AGENT_KIT_RELEASE_BASE_URL=https://github.com/JorisJonkers-dev/agent-kit/releases/download
-ARG AGENT_KIT_VERSION=v1.1.0
+ARG AGENT_KIT_VERSION=v3.3.0
 ENV SERVICE_VERSION=${GIT_SHA}
 ENV AGENT_KIT_HOME_SOURCE=/opt/agent-kit/home
 ENV AGENT_KIT_SDD_SOURCE=/opt/agent-kit/sdd

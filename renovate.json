@@ -1,4 +1,34 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>JorisJonkers-dev/renovate-config"]
+  "extends": ["github>JorisJonkers-dev/renovate-config"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the baked agent-kit runtime-home pin in the agent-runner image and its build workflows against agent-kit releases.",
+      "managerFilePatterns": [
+        "/(^|/)services/agent-runner/Dockerfile$/",
+        "/(^|/)\\.github/workflows/ci\\.ya?ml$/",
+        "/(^|/)\\.github/workflows/publish\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "runtime-home:(?<currentValue>v\\d+\\.\\d+\\.\\d+)",
+        "AGENT_KIT_VERSION=(?<currentValue>v\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "JorisJonkers-dev/agent-kit",
+      "depTypeTemplate": "agent-kit-runtime",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Keep the baked agent-kit runtime pins (Dockerfile ARG + ci/publish build-args) in lockstep in a single PR.",
+      "matchManagers": ["custom.regex"],
+      "matchDepTypes": ["agent-kit-runtime"],
+      "groupName": "agent-kit runtime",
+      "semanticCommitType": "chore",
+      "semanticCommitScope": "agent-kit",
+      "addLabels": ["area: shared-libs"]
+    }
+  ]
 }
