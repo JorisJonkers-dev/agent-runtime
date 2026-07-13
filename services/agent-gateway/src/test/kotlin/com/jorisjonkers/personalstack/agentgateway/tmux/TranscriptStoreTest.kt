@@ -88,7 +88,12 @@ class TranscriptStoreTest {
         val metadata = store.rotateIfNeeded(stable)
 
         assertThat(metadata.activeSegment).isEqualTo(1)
-        assertThat(store.segmentStore.activeSegmentPath(stable).fileName.toString()).isEqualTo("segment-000001.log")
+        assertThat(
+            store.segmentStore
+                .activeSegmentPath(stable)
+                .fileName
+                .toString(),
+        ).isEqualTo("segment-000001.log")
     }
 
     @Test
