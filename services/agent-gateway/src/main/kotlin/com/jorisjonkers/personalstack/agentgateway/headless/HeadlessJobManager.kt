@@ -79,7 +79,8 @@ class HeadlessJobManager(
         Files.createDirectories(stateDir)
         val outputFile = stateDir.resolve("headless-$id.jsonl")
         Files.createFile(outputFile)
-        val command = headlessCommandFor(request.kind, request.prompt, request.cliSessionId, request.partialMessages)
+        val command =
+            headlessCommandFor(request.kind, request.prompt, request.cliSessionId, request.partialMessages)
         val job = registry.register(
             HeadlessJob(
                 id = id,

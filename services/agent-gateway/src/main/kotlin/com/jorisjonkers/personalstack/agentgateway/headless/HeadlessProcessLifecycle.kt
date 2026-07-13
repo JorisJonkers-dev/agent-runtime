@@ -121,7 +121,8 @@ internal class HeadlessProcessLifecycle(
         gobbler.join(GOBBLER_JOIN_MS)
         if (!finished) {
             process.destroyForcibly()
-            registry.updateUnlessCancelled(context.id, HeadlessJobStatus.FAILED, TIMEOUT_EXIT_CODE)
+            registry
+                .updateUnlessCancelled(context.id, HeadlessJobStatus.FAILED, TIMEOUT_EXIT_CODE)
                 ?.takeUnless { it.status == HeadlessJobStatus.CANCELLED }
                 ?.let {
                     telemetry.recordEvent(
@@ -136,7 +137,8 @@ internal class HeadlessProcessLifecycle(
         } else {
             val exitCode = process.exitValue()
             val status = if (exitCode == 0) HeadlessJobStatus.COMPLETED else HeadlessJobStatus.FAILED
-            registry.updateUnlessCancelled(context.id, status, exitCode)
+            registry
+                .updateUnlessCancelled(context.id, status, exitCode)
                 ?.takeUnless { it.status == HeadlessJobStatus.CANCELLED }
                 ?.let {
                     val outcome =
