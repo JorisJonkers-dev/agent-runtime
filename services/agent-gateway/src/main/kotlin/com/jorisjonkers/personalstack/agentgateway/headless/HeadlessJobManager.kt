@@ -80,16 +80,22 @@ class HeadlessJobManager(
         val outputFile = stateDir.resolve("headless-$id.jsonl")
         Files.createFile(outputFile)
         val command =
-            headlessCommandFor(request.kind, request.prompt, request.cliSessionId, request.partialMessages)
-        val job = registry.register(
-            HeadlessJob(
-                id = id,
-                kind = request.kind,
-                status = HeadlessJobStatus.RUNNING,
-                outputFile = outputFile,
-                createdAt = Instant.now(),
-            ),
-        )
+            headlessCommandFor(
+                request.kind,
+                request.prompt,
+                request.cliSessionId,
+                request.partialMessages,
+            )
+        val job =
+            registry.register(
+                HeadlessJob(
+                    id = id,
+                    kind = request.kind,
+                    status = HeadlessJobStatus.RUNNING,
+                    outputFile = outputFile,
+                    createdAt = Instant.now(),
+                ),
+            )
         jobTelemetry.recordEvent(
             kind = request.kind,
             operation = GatewayOperationLabel.SPAWN,
