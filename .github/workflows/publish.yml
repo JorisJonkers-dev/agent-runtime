@@ -169,13 +169,14 @@ jobs:
   # -- 3. Render and publish the deploy artifact ----------------------------
   publish-deploy-artifact:
     needs: [resolve-image-lock]
-    uses: JorisJonkers-dev/github-workflows/.github/workflows/deploy-artifact.yml@4b444f9a50edf76e4aea4148d73407c34a1e43a4 # v0.12.1
+    uses: JorisJonkers-dev/github-workflows/.github/workflows/deploy-artifact.yml@ea7a9a1c52870c2ae3db08cd077d54dbef48aa3d # v0.14.0
     with:
       ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       artifact-name: agent-runtime
       artifact-version: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-      schema-version: 0.19.0
-      context-ref: ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:55777b30ef8d7fe25d361ed476c2d820a6cd54b9e10ce87d16590b725b934e1a
+      schema-version: 0.20.0
+      apply-bundle: true
+      context-ref: ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:9479bc22ae11183c0b68f257d2c1a21455be8c3cff602d3a491ea3ff31d01fe3
       deploy-dir: platform
       image-lock-artifact: ${{ needs.resolve-image-lock.outputs.images-lock-artifact }}
       environments: production
