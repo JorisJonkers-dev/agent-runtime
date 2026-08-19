@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.2](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.18.1...v0.18.2) (2026-08-19)
+
+
+### Bug Fixes
+
+* **ci:** bump the reusable workflow pins so job timeouts apply ([#24](https://github.com/JorisJonkers-dev/agent-runtime/issues/24)) ([32b95be](https://github.com/JorisJonkers-dev/agent-runtime/commit/32b95bed1e0890ac379a4c027efe01b871839b77))
+
 ## [0.18.1](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.18.0...v0.18.1) (2026-07-10)
 
 
