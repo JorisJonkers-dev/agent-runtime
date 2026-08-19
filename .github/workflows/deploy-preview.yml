@@ -16,9 +16,9 @@ jobs:
     uses: JorisJonkers-dev/github-workflows/.github/workflows/deploy-validate.yml@4b444f9a50edf76e4aea4148d73407c34a1e43a4 # v0.12.1
     with:
       deploy-dir: platform
-      schema-version: 0.19.0
+      schema-version: 0.20.0
       image-lock-path: platform/images.lock.json
-      context-ref: ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:55777b30ef8d7fe25d361ed476c2d820a6cd54b9e10ce87d16590b725b934e1a
+      context-ref: ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:9479bc22ae11183c0b68f257d2c1a21455be8c3cff602d3a491ea3ff31d01fe3
       environments: production
       comment: true
     permissions:
