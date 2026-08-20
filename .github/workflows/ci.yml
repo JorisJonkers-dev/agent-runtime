@@ -35,6 +35,7 @@ name: 'CI'
   'agents-login':
     'name': 'agents-login'
     'runs-on': 'ubuntu-latest'
+    'timeout-minutes': 30
     'defaults':
       'run':
         'working-directory': 'services/agents-login'
@@ -54,6 +55,7 @@ name: 'CI'
   'runner-shell':
     'name': 'Runner Shell Contract'
     'runs-on': 'ubuntu-latest'
+    'timeout-minutes': 30
     'steps':
       - 'uses': 'actions/checkout@v7'
       - 'run': 'bash -n services/agent-runner/*.sh'
@@ -62,6 +64,7 @@ name: 'CI'
   'workflow-lint':
     'name': 'Workflow Lint'
     'runs-on': 'ubuntu-latest'
+    'timeout-minutes': 30
     'steps':
       - 'uses': 'actions/checkout@v7'
       - 'name': 'Download actionlint'
@@ -75,6 +78,7 @@ name: 'CI'
   'docker-build':
     'name': 'Docker Build'
     'runs-on': 'ubuntu-latest'
+    'timeout-minutes': 30
     'strategy':
       'fail-fast': false
       'matrix':
@@ -118,6 +122,7 @@ name: 'CI'
   'pipeline-complete':
     'name': 'Pipeline Complete'
     'runs-on': 'ubuntu-latest'
+    'timeout-minutes': 30
     'needs':
       - 'jvm-ci'
       - 'agents-login'
