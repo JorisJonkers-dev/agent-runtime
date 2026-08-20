@@ -31,6 +31,7 @@ jobs:
   publish-images:
     name: Publish ${{ matrix.image }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
@@ -109,6 +110,7 @@ jobs:
   resolve-image-lock:
     needs: [publish-images]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
