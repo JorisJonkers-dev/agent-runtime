@@ -171,7 +171,7 @@ jobs:
   # -- 3. Render and publish the deploy artifact ----------------------------
   publish-deploy-artifact:
     needs: [resolve-image-lock]
-    uses: JorisJonkers-dev/github-workflows/.github/workflows/deploy-artifact.yml@ea7a9a1c52870c2ae3db08cd077d54dbef48aa3d # v0.14.0
+    uses: JorisJonkers-dev/github-workflows/.github/workflows/deploy-artifact.yml@5b5e93dc81846cac4e13118e7280fd81a143685e # v0.15.1
     with:
       ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       artifact-name: agent-runtime

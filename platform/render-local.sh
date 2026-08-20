@@ -20,7 +20,6 @@
 # NODE_AUTH_TOKEN) first: export GITHUB_TOKEN="$(gh auth token)".
 set -euo pipefail
 
-DEPLOY_CHECK_VERSION="0.15.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -44,6 +43,18 @@ value_from_workflows() {
   grep -rhoE "^[[:space:]]*${key}:[[:space:]]*[^[:space:]]+" .github/workflows/*.yml 2>/dev/null \
     | awk '{print $2}' | sort -u | head -1
 }
+
+# deploy-check ships from the same repository as the reusable workflows and is
+# released with them, so the version comment on the deploy-validate pin is the
+# version to run. Hardcoding it here is what let the previous copy rot.
+DEPLOY_CHECK_VERSION="$(
+  grep -rhoE 'github-workflows/\.github/workflows/deploy-(validate|artifact)\.yml@[0-9a-f]{40} # v[0-9]+\.[0-9]+\.[0-9]+' \
+    .github/workflows/*.yml 2>/dev/null \
+    | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+$' | tr -d v \
+    | sort -t. -k1,1n -k2,2n -k3,3n | tail -1
+)"
+[ -n "$DEPLOY_CHECK_VERSION" ] \
+  || fail "no '# vX.Y.Z' comment on a deploy-validate/deploy-artifact pin in .github/workflows/*.yml"
 
 SCHEMA_VERSION="$(value_from_workflows 'schema-version')"
 CONTEXT_REF="$(value_from_workflows 'context-ref')"
