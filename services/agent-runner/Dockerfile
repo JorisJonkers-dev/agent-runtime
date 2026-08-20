@@ -14,7 +14,10 @@
 # `agent-runners` NetworkPolicy + the credential PVCs being mounted
 # only where they are needed.
 
-FROM gradle:9.5.1-jdk21-alpine AS gateway-build
+# The Gradle build produces an architecture-independent jar, so it runs on the
+# builder's native platform. Without this the whole Kotlin build would run under
+# QEMU for the arm64 image, taking far longer for a byte-identical artifact.
+FROM --platform=$BUILDPLATFORM gradle:9.5.1-jdk21-alpine AS gateway-build
 WORKDIR /app
 COPY settings.gradle.kts build.gradle.kts gradle.properties* ./
 COPY gradle/ gradle/
@@ -35,7 +38,8 @@ RUN --mount=type=secret,id=github_token \
     export GITHUB_TOKEN GITHUB_ACTOR; \
     gradle :services:agent-gateway:bootJar --no-daemon
 
-FROM eclipse-temurin:25-jre-alpine AS otel
+# Only downloads a jar, so likewise native.
+FROM --platform=$BUILDPLATFORM eclipse-temurin:25-jre-alpine AS otel
 RUN apk add --no-cache curl && \
     curl -fsSL -o /otel-javaagent.jar \
     "https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v2.26.1/opentelemetry-javaagent.jar"
