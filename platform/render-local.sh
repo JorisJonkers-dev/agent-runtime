@@ -24,7 +24,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FLAG_DIFF=false
 FLAG_SCORECARD_ONLY=false
 CONTEXT_DIR="${CONTEXT_DIR:-}"
-CONTEXT_REF="${CONTEXT_REF:-ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:64d00fe03a271dbd03a48005d0a0cc6cc5fe43df23c0e97b649c2f8b3e78b418}"
+CONTEXT_REF="${CONTEXT_REF:-ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:9479bc22ae11183c0b68f257d2c1a21455be8c3cff602d3a491ea3ff31d01fe3}"
 OUT_DIR="${OUT_DIR:-$REPO_ROOT/out}"
 RESOLVED_VERSION=""
 NPM_PROVENANCE_VERIFIED="${NPM_PROVENANCE_VERIFIED:-true}"
@@ -93,7 +93,7 @@ resolve_schema_version() {
     RESOLVED_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/.platform/deploy-version")"
     log "Using schema version from .platform/deploy-version: $RESOLVED_VERSION"
   else
-    RESOLVED_VERSION="0.16.0"
+    RESOLVED_VERSION="0.20.0"
     log "Using baked-in schema version: $RESOLVED_VERSION"
   fi
 }
@@ -121,6 +121,14 @@ require_digest_ref() {
   esac
 }
 
+# Locate cluster-context-public.yml inside a context directory, as CI does.
+find_cluster_context() {
+  local match
+  match=$(find "$1" -type f -name 'cluster-context-public.yml' 2>/dev/null | sort | head -1)
+  [ -n "$match" ] || fail "E_CONTEXT_FILE_MISSING: cluster-context-public.yml not found under $1"
+  printf '%s\n' "$match"
+}
+
 pull_or_use_local_context() {
   if [ -n "$CONTEXT_DIR" ]; then
     CONTEXT_PKG_DIR="$CONTEXT_DIR"
@@ -133,6 +141,7 @@ pull_or_use_local_context() {
       || fail "failed to pull context package $CONTEXT_REF"
     CONTEXT_PKG_DIR="$OUT_DIR/context-pkg"
   fi
+  CONTEXT_FILE="$(find_cluster_context "$CONTEXT_PKG_DIR")"
 }
 
 render_all_fragments() {
@@ -146,7 +155,7 @@ render_all_fragments() {
         --context "$CONTEXT_REF" \
         --context-dir "$CONTEXT_PKG_DIR" \
         --images "$SCRIPT_DIR/images.lock.json" \
-        --output "$OUT_DIR/manifests/$env" \
+        --output "$OUT_DIR/manifests/$env/$fragment.yaml" \
         || fail "render failed for $fragment ($env)"
     done
     deploy-config-schema artifact emit-kustomization-health \
@@ -160,13 +169,26 @@ render_all_fragments() {
 
 validate_rendered_output() {
   local env
-  log "kubeconform"
-  kubeconform -schema-location default \
-    -strict "$OUT_DIR/manifests/" \
-    || fail "kubeconform validation failed"
-  log "kustomize build dry-run"
+  # A fragment is a schema document wrapping its payload, so kubeconform and
+  # kustomize -- both of which expect apiVersion/kind at the top level -- always
+  # fail when pointed at out/manifests. CI does not validate that shape at all;
+  # render correctness comes from the schema CLI. The applyable objects are what
+  # can be checked, so lift them first and validate those.
   for env in "${ENVS[@]}"; do
-    kustomize build "$OUT_DIR/manifests/$env" >/dev/null \
+    log "emit-apply-bundle ($env)"
+    deploy-config-schema artifact emit-apply-bundle \
+      --manifests "$OUT_DIR/manifests/$env" \
+      --out "$OUT_DIR/apply/$env" \
+      || fail "emit-apply-bundle failed for $env"
+    if command -v kubeconform >/dev/null 2>&1; then
+      log "kubeconform ($env)"
+      kubeconform -schema-location default -strict "$OUT_DIR/apply/$env" \
+        || fail "kubeconform validation failed for $env"
+    else
+      warn "kubeconform not installed; skipping schema validation of $env"
+    fi
+    log "kustomize build dry-run ($env)"
+    kustomize build "$OUT_DIR/apply/$env" >/dev/null \
       || fail "kustomize build failed for $env"
   done
   if grep -rl 'kind: Secret' "$OUT_DIR/manifests/" 2>/dev/null | grep -q .; then
@@ -174,30 +196,24 @@ validate_rendered_output() {
   fi
 }
 
-validate_raw_manifests_if_present() {
-  [ -d "$SCRIPT_DIR/raw-manifests" ] || return 0
-  deploy-config-schema artifact validate-raw-manifests \
-    --deployment "$SCRIPT_DIR/deployment.yml" \
-    --root "$SCRIPT_DIR/raw-manifests" \
-    --output-root "$OUT_DIR/raw-manifests" \
-    --forbidden-kinds Secret,ClusterRole,ClusterRoleBinding,CustomResourceDefinition,Namespace \
-    --out "$OUT_DIR/raw-manifests-guard.json" \
-    || fail "raw-manifests validation failed"
+# The toolkit exposes only emit-apply-bundle, emit-contract and
+# emit-kustomization-health under `artifact`; there is no
+# validate-raw-manifests subcommand in any published version, so a
+# rawManifests declaration cannot be checked locally. Say so rather than
+# scoring an unexplained fail.
+reject_unsupported_raw_manifests() {
+  grep -qE '^[[:space:]]*rawManifests:' <(deployment_source "$SCRIPT_DIR/deployment.yml") || return 0
+  fail "E_RAW_MANIFESTS_UNSUPPORTED: deployment.yml declares rawManifests, but deploy-config-schema exposes no artifact validate-raw-manifests subcommand. CI cannot guard it either."
 }
 
 emit_contract() {
-  log "leak-scan (deployment-artifact deny-list)"
-  deploy-config-schema artifact leak-scan \
-    --path "$OUT_DIR" \
-    --mode deployment-artifact \
-    || fail "E_LEAK_DETECTED: deny-list scan flagged rendered output"
-
   deploy-config-schema artifact emit-contract \
     --artifact-name "agent-runtime" \
-    --schema-version "$RESOLVED_VERSION" \
     --context-ref "$CONTEXT_REF" \
     --environments "production" \
     --images "$SCRIPT_DIR/images.lock.json" \
+    --deployment "$SCRIPT_DIR/deployment.yml" \
+    --context "$CONTEXT_FILE" \
     --provenance-verified "$NPM_PROVENANCE_VERIFIED" \
     --out "$OUT_DIR/artifact-contract.yaml" \
     || fail "emit-contract failed"
@@ -370,7 +386,7 @@ main() {
   pull_or_use_local_context
   render_all_fragments
   validate_rendered_output
-  validate_raw_manifests_if_present
+  reject_unsupported_raw_manifests
   emit_contract
   compute_scorecard "$SCRIPT_DIR/deployment.yml" "$SCRIPT_DIR/images.lock.json"
   write_scorecard_outputs
