@@ -115,15 +115,6 @@ name: 'CI'
             AGENT_KIT_RUNTIME_REF=ghcr.io/jorisjonkers-dev/agent-kit/runtime-home:v3.3.0
             AGENT_KIT_VERSION=v3.3.0
 
-  'deploy-bundle':
-    'name': 'Deploy Bundle'
-    'uses': 'JorisJonkers-dev/github-workflows/.github/workflows/deploy-bundle.yml@v0.14.1'
-    'with':
-      'package-version': '0.9.0'
-      'images': 'deploy/images.json'
-    'secrets':
-      'packages-token': '${{ secrets.GITHUB_TOKEN }}'
-
   'pipeline-complete':
     'name': 'Pipeline Complete'
     'runs-on': 'ubuntu-latest'
@@ -133,7 +124,6 @@ name: 'CI'
       - 'runner-shell'
       - 'workflow-lint'
       - 'docker-build'
-      - 'deploy-bundle'
     'if': '${{ always() }}'
     'steps':
       - 'uses': 're-actors/alls-green@release/v1'
