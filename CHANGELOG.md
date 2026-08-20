@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.18.2...v0.19.0) (2026-08-20)
+
+
+### Features
+
+* **ci:** publish images for arm64 as well as amd64 ([#26](https://github.com/JorisJonkers-dev/agent-runtime/issues/26)) ([309615c](https://github.com/JorisJonkers-dev/agent-runtime/commit/309615c343f324fd5a765aa66e13bfc57afe273f))
+
 ## [0.18.2](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.18.1...v0.18.2) (2026-08-19)
 
 
