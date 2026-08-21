@@ -12,7 +12,7 @@ on:
       # rendering works at all. Without this, a pin bump to a broken toolkit or a
       # stale context digest merges with no preview -- which is how a release with a
       # context-resolution bug reached every repository.
-      - '.github/workflows/deploy-preview.yml'
+      - .github/workflows/deploy-preview.yml
 
 permissions: {}
 
