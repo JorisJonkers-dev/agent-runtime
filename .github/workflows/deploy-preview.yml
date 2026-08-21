@@ -8,6 +8,11 @@ on:
   pull_request:
     paths:
       - 'platform/**'
+      # schema-version and context-ref live in this file, and they decide whether
+      # rendering works at all. Without this, a pin bump to a broken toolkit or a
+      # stale context digest merges with no preview -- which is how a release with a
+      # context-resolution bug reached every repository.
+      - '.github/workflows/deploy-preview.yml'
 
 permissions: {}
 
