@@ -23,7 +23,7 @@ jobs:
       deploy-dir: platform
       schema-version: 0.22.0
       image-lock-path: platform/images.lock.json
-      context-ref: ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:e839b90839a5f33f1038d305531d9bb2cd85a3a627a436c395c4116533321cc9
+      context-ref: ghcr.io/jorisjonkers-dev/cluster-deploy-context-public@sha256:95dc39fc695694c8fb4b0c538d7fe13038d407c7302c3725c98f0496c6a83499
       environments: production
       comment: true
     permissions:
