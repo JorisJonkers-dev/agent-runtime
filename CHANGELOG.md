@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.1](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.19.0...v0.19.1) (2026-08-27)
+
+
+### Bug Fixes
+
+* **deploy:** point agent-gateway's liveness probe at the liveness group ([#39](https://github.com/JorisJonkers-dev/agent-runtime/issues/39)) ([9180461](https://github.com/JorisJonkers-dev/agent-runtime/commit/91804613194fc4b38a85c5e97ae49b2a8e7b2b3b))
+* **platform:** make render-local.sh able to run ([#29](https://github.com/JorisJonkers-dev/agent-runtime/issues/29)) ([9762666](https://github.com/JorisJonkers-dev/agent-runtime/commit/9762666dc0a1e5d2744f039984cb24c6d09e909c))
+
 ## [0.19.0](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.18.2...v0.19.0) (2026-08-20)
 
 
