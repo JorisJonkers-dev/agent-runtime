@@ -3,7 +3,7 @@
 # The browser-facing half of the portal lives in agents-ui / agents-api.
 
 # ---- build stage ----------------------------------------------------------
-FROM node:22-bookworm-slim AS build
+FROM node:22.23.3-bookworm-slim AS build
 WORKDIR /app
 
 # node-pty is a native addon; it needs a toolchain + python at install time.
@@ -22,7 +22,7 @@ RUN npm run build \
   && npm prune --omit=dev
 
 # ---- runtime stage --------------------------------------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM node:22.23.3-bookworm-slim AS runtime
 
 # CA certificates: the bookworm-slim base ships none, and the Codex CLI is a
 # Rust binary that verifies TLS against the SYSTEM root store (not a bundled
