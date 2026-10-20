@@ -43,7 +43,7 @@ class GatewayObservabilityContractTest {
         val dockerfile = readProjectFile("Dockerfile")
 
         assertThat(dockerfile).contains(
-            "FROM eclipse-temurin:25-jre-alpine AS otel",
+            "FROM --platform=\$BUILDPLATFORM eclipse-temurin:25-jre-alpine AS otel",
             "opentelemetry-java-instrumentation/releases/download/v2.26.1/opentelemetry-javaagent.jar",
             "ENV OTEL_SERVICE_NAME=agent-gateway",
             "COPY --from=otel /otel-javaagent.jar /app/otel-javaagent.jar",
