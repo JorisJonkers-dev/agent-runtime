@@ -32,11 +32,6 @@ import java.util.UUID
  * can still read the final status and output of jobs that finished before
  * the current process started. Jobs that were RUNNING at the time of a
  * previous restart are re-surfaced as FAILED (the process died with them).
- *
- * KB hooks: `KB_AUTO_MCP_DISABLED=1` is injected into every headless
- * process environment by default. Pass `enableKbHooks = true` in
- * [HeadlessLaunchRequest] to opt a specific run back in (council workers
- * that explicitly want KB recall/capture may do so).
  */
 @Component
 class HeadlessJobManager(
@@ -110,10 +105,9 @@ class HeadlessJobManager(
                 cwd = cwd,
                 outputFile = outputFile.toFile(),
                 timeoutSeconds = request.timeoutSeconds,
-                enableKbHooks = request.enableKbHooks,
             ),
         )
-        log.info("launched headless {} job {} in {} (kbHooks={})", request.kind, id, cwd, request.enableKbHooks)
+        log.info("launched headless {} job {} in {}", request.kind, id, cwd)
         return job
     }
 
@@ -174,27 +168,18 @@ class HeadlessJobManager(
         fun start(
             command: List<String>,
             cwd: File,
-            enableKbHooks: Boolean,
         ): Process
     }
 
     companion object {
         const val DEFAULT_TIMEOUT_SECONDS = 600L
         const val MAX_OUTPUT_CHARS = 65_536
-
-        /** Environment variable that suppresses auto-KB recall/capture hooks in agent-kit. */
-        const val KB_AUTO_MCP_DISABLED_KEY = "KB_AUTO_MCP_DISABLED"
-        const val KB_AUTO_MCP_DISABLED_VALUE = "1"
         val DefaultProcessFactory =
-            ProcessFactory { command, cwd, enableKbHooks ->
+            ProcessFactory { command, cwd ->
                 ProcessBuilder(command)
                     .directory(cwd)
                     .redirectErrorStream(true)
-                    .also { pb ->
-                        if (!enableKbHooks) {
-                            pb.environment()[KB_AUTO_MCP_DISABLED_KEY] = KB_AUTO_MCP_DISABLED_VALUE
-                        }
-                    }.start()
+                    .start()
             }
     }
 }
@@ -206,11 +191,4 @@ data class HeadlessLaunchRequest(
     val cliSessionId: String? = null,
     val timeoutSeconds: Long = HeadlessJobManager.DEFAULT_TIMEOUT_SECONDS,
     val partialMessages: Boolean = false,
-    /**
-     * When false (the default) the process environment includes
-     * `KB_AUTO_MCP_DISABLED=1` so headless/council workers do not fire
-     * auto-KB recall or capture hooks. Set to true only for runs that
-     * explicitly need KB hook access.
-     */
-    val enableKbHooks: Boolean = false,
 )

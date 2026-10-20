@@ -36,7 +36,6 @@ class HeadlessController(
                     cliSessionId = req.cliSessionId,
                     timeoutSeconds = req.timeoutSeconds ?: HeadlessJobManager.DEFAULT_TIMEOUT_SECONDS,
                     partialMessages = req.partialMessages,
-                    enableKbHooks = req.enableKbHooks,
                 ),
             )
         return ResponseEntity.status(HttpStatus.CREATED).body(toResponse(job, null))

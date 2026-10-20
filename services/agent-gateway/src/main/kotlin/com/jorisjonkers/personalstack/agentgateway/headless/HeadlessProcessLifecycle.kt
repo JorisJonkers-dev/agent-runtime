@@ -97,7 +97,7 @@ internal class HeadlessProcessLifecycle(
 
     private fun startProcess(context: HeadlessRunContext): Process? =
         runCatching {
-            processFactory.start(context.command, context.cwd, context.enableKbHooks)
+            processFactory.start(context.command, context.cwd)
         }.getOrElse { ex ->
             log.error("headless job {} failed to start: {}", context.id, ex.message)
             registry.markStatus(context.id, HeadlessJobStatus.FAILED)?.let {
@@ -179,5 +179,4 @@ internal data class HeadlessRunContext(
     val cwd: File,
     val outputFile: File,
     val timeoutSeconds: Long,
-    val enableKbHooks: Boolean = false,
 )

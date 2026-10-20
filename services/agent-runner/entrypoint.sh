@@ -25,18 +25,18 @@ check_agent_kit_manifest() {
   expected_version="${AGENT_KIT_EXPECTED_VERSION:-}"
 
   if [ ! -f "$manifest_path" ]; then
-    echo "[entrypoint] WARN: knowledge-system agent kit manifest missing for ${agent_name} at ${manifest_path}; run agents-kb-install or /install.sh --agent all"
+    echo "[entrypoint] WARN: agent kit manifest missing for ${agent_name} at ${manifest_path}"
     return
   fi
 
   installed_version=$(awk -F= '/^version=/{print $2; exit}' "$manifest_path" 2>/dev/null || true)
   if [ -z "$installed_version" ]; then
-    echo "[entrypoint] WARN: knowledge-system agent kit manifest for ${agent_name} has no version at ${manifest_path}"
+    echo "[entrypoint] WARN: agent kit manifest for ${agent_name} has no version at ${manifest_path}"
     return
   fi
 
   if [ -n "$expected_version" ] && [ "$installed_version" != "$expected_version" ]; then
-    echo "[entrypoint] WARN: knowledge-system agent kit manifest for ${agent_name} is ${installed_version}, expected ${expected_version}; run agents-kb-install or /install.sh --agent all"
+    echo "[entrypoint] WARN: agent kit manifest for ${agent_name} is ${installed_version}, expected ${expected_version}"
   fi
 }
 
@@ -767,8 +767,7 @@ fi
 
 # Register MCP servers into Claude Code from the declarative ConfigMap
 # (agents-mcp-servers, mounted at /etc/agent-mcp). The selected profile
-# is an mcpServers object with @KB_URL@/@KB_BEARER_TOKEN@ placeholders
-# filled from the Pod env, so no secret is baked into the ConfigMap.
+# is an mcpServers object; no secret is baked into the ConfigMap.
 # The managed servers win for their own keys; any hand-added server
 # already in the config is preserved. Absent mount (feature off) => no-op.
 AGENT_MCP_PROFILE="${AGENT_MCP_PROFILE:-minimal}"
@@ -802,21 +801,17 @@ else
   fi
 fi
 if [ -f "$MCP_SERVERS_FILE" ]; then
-  mcp_rendered=$(mktemp)
-  sed -e "s|@KB_URL@|${KB_URL:-}|g" \
-      -e "s|@KB_BEARER_TOKEN@|${KB_BEARER_TOKEN:-}|g" \
-      "$MCP_SERVERS_FILE" > "$mcp_rendered"
   mcp_merged=$(mktemp)
+  # Drop the retired `knowledge` server from homes seeded before it went.
   if jq -s '
         .[0] as $cfg | .[1] as $servers
-        | $cfg + { mcpServers: (($cfg.mcpServers // {}) * $servers) }
-      ' "$HOME/.claude.json" "$mcp_rendered" > "$mcp_merged" 2>/dev/null; then
+        | $cfg + { mcpServers: ((($cfg.mcpServers // {}) | del(.knowledge)) * $servers) }
+      ' "$HOME/.claude.json" "$MCP_SERVERS_FILE" > "$mcp_merged" 2>/dev/null; then
     mv "$mcp_merged" "$HOME/.claude.json"
   else
     echo "[entrypoint] WARN: failed to merge MCP servers from $MCP_SERVERS_FILE"
     rm -f "$mcp_merged"
   fi
-  rm -f "$mcp_rendered"
 fi
 
 backup_claude_json
@@ -853,10 +848,6 @@ fi
 # stays the hard guarantee. Managed each boot so the invariant survives a
 # hand-edited config; the create-once approval/sandbox/trust config and
 # any unrelated [features] dotted keys are preserved.
-#
-# Codex reads remote HTTP MCP servers natively and takes the bearer at
-# request time from KB_BEARER_TOKEN (bearer_token_env_var), so no secret
-# lands in config.toml — only @KB_URL@ is substituted.
 if [ -n "${AGENT_CODEX_MCP_FILE:-}" ]; then
   CODEX_MCP_FILE="$AGENT_CODEX_MCP_FILE"
 else
@@ -898,7 +889,7 @@ if [ -f "$CODEX_HOME/config.toml" ]; then
     echo "enabled = false"
     if [ -f "$CODEX_MCP_FILE" ]; then
       echo ""
-      sed -e "s|@KB_URL@|${KB_URL:-}|g" "$CODEX_MCP_FILE"
+      cat "$CODEX_MCP_FILE"
     fi
   } >> "$codex_tmp"
   # Collapse runs of blank lines so repeated boots don't grow the file.
