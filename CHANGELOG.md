@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.2](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.19.1...v0.19.2) (2026-10-20)
+
+
+### Bug Fixes
+
+* stop wiring the retired knowledge MCP server and KB hooks into runners ([#45](https://github.com/JorisJonkers-dev/agent-runtime/issues/45)) ([96925e1](https://github.com/JorisJonkers-dev/agent-runtime/commit/96925e1b59fbc7d86ea0922290416f4d33d83d89))
+
 ## [0.19.1](https://github.com/JorisJonkers-dev/agent-runtime/compare/v0.19.0...v0.19.1) (2026-08-27)
 
 
