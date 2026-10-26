@@ -4,6 +4,10 @@ name: 'Repository Hygiene'
   'pull_request':
   'workflow_dispatch':
 
+'concurrency':
+  'group': '${{ github.workflow }}-${{ github.ref }}'
+  'cancel-in-progress': '${{ github.ref != ''refs/heads/main'' }}'
+
 'permissions':
   'contents': 'read'
   'pull-requests': 'read'
