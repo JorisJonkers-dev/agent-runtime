@@ -1,6 +1,6 @@
 [versions]
-jorisjonkers-commons = "0.7.1"
-jorisjonkers-conventions = "0.7.0"
+jorisjonkers-commons = "0.11.0"
+jorisjonkers-conventions = "0.7.1"
 
 [libraries]
 kotlin-commons-archunit-test = { module = "dev.jorisjonkers:kotlin-commons-archunit-test", version.ref = "jorisjonkers-commons" }
